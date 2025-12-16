@@ -1,6 +1,6 @@
 """
 Email Verification API using Flask and Supabase
-Handles new user registration and email 
+Handles new user registration and email verification
 """
 
 from flask import Flask, request, jsonify
@@ -107,7 +107,6 @@ def register_user():
     Request Body:
     {
         "email": "user@example.com",
-        "password": "SecurePass123!",
         "full_name": "John Doe" (optional)
     }
     """
@@ -119,14 +118,13 @@ def register_user():
             return jsonify({"success": False, "error": "No data provided"}), 400
         
         email = data.get('email')
-        password = data.get('password')
         full_name = data.get('full_name')
         
         # Validate required fields
-        if not email or not password:
+        if not email:
             return jsonify({
                 "success": False,
-                "error": "Email and password are required"
+                "error": "Email is required"
             }), 400
         
         # Validate email format
@@ -136,13 +134,7 @@ def register_user():
                 "error": "Invalid email format"
             }), 400
         
-        # Validate password strength
-        is_valid, message = validate_password(password)
-        if not is_valid:
-            return jsonify({
-                "success": False,
-                "error": message
-            }), 400
+        # No password required for registration in this deployment
         
         # Check if user already exists
         existing_user = supabase.table("users").select("*").eq("email", email).execute()
@@ -165,7 +157,6 @@ def register_user():
         # Create user record (unverified)
         user_data = {
             "email": email,
-            "password_hash": password,  # In production, hash this with bcrypt!
             "full_name": full_name,
             "email_verified": False,
             "verification_code": verification_code,
@@ -395,10 +386,9 @@ def api_docs():
             {
                 "path": "/api/register",
                 "method": "POST",
-                "description": "Register a new user and send verification code",
+                "description": "Register a new user (email only) and send verification code",
                 "request_example": {
                     "email": "user@example.com",
-                    "password": "SecurePass123!",
                     "full_name": "John Doe"
                 },
                 "response_example": {
@@ -407,9 +397,8 @@ def api_docs():
                     "email": "user@example.com"
                 },
                 "error_examples": [
-                    {"status":400, "body": {"success": False, "error": "Email and password are required"}},
+                    {"status":400, "body": {"success": False, "error": "Email is required"}},
                     {"status":400, "body": {"success": False, "error": "Invalid email format"}},
-                    {"status":400, "body": {"success": False, "error": "Password must be at least 8 characters long"}},
                     {"status":500, "body": {"success": False, "error": "Registration failed: <reason>"}}
                 ],
                 "status_codes": [201, 400, 500]
