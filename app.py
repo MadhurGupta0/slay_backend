@@ -9,6 +9,7 @@ from supabase import create_client, Client
 import os
 import random
 import string
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 import threading
@@ -290,9 +291,73 @@ def send_email_background(email: str, code: str, full_name: Optional[str] = None
 
 def validate_email(email: str) -> bool:
     """Basic email validation"""
-    import re
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
+
+def parse_datetime_string(dt_str: str) -> datetime:
+    """
+    Parse datetime string from Supabase with various format support
+    Handles formats like:
+    - '2025-12-16T20:51:14.9658+00:00'
+    - '2025-12-16T20:51:14.965800+00:00'
+    - '2025-12-16T20:51:14Z'
+    - '2025-12-16T20:51:14.965800Z'
+    """
+    if not dt_str:
+        raise ValueError("Empty datetime string")
+    
+    dt_str_clean = dt_str.strip()
+    
+    # Handle Z timezone (convert to +00:00)
+    if dt_str_clean.endswith('Z'):
+        dt_str_clean = dt_str_clean[:-1] + '+00:00'
+    
+    # Normalize microseconds to 6 digits for consistent parsing
+    # Match pattern: YYYY-MM-DDTHH:MM:SS.microseconds+timezone
+    pattern = r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d+)([+\-]\d{2}:\d{2}|Z)?'
+    match = re.match(pattern, dt_str_clean)
+    
+    if match:
+        base_time = match.group(1)
+        microseconds = match.group(2)
+        timezone = match.group(3) or '+00:00'
+        
+        # Normalize microseconds to 6 digits
+        if len(microseconds) < 6:
+            microseconds = microseconds.ljust(6, '0')
+        elif len(microseconds) > 6:
+            microseconds = microseconds[:6]
+        
+        dt_str_clean = f"{base_time}.{microseconds}{timezone}"
+    
+    try:
+        # Parse with fromisoformat
+        parsed_dt = datetime.fromisoformat(dt_str_clean)
+        
+        # Convert to naive UTC datetime for comparison
+        if parsed_dt.tzinfo:
+            # Convert to UTC and remove timezone info
+            parsed_dt = parsed_dt.astimezone(datetime.now().astimezone().tzinfo).replace(tzinfo=None)
+        
+        return parsed_dt
+    except ValueError as e:
+        # Fallback: try parsing without timezone
+        try:
+            # Remove timezone and parse
+            dt_str_no_tz = re.sub(r'[+\-]\d{2}:\d{2}$', '', dt_str_clean)
+            if dt_str_no_tz.endswith('Z'):
+                dt_str_no_tz = dt_str_no_tz[:-1]
+            
+            # Try to parse the base format
+            if '.' in dt_str_no_tz:
+                base, micro = dt_str_no_tz.split('.')
+                micro = micro[:6].ljust(6, '0')  # Normalize to 6 digits
+                dt_str_no_tz = f"{base}.{micro}"
+            
+            parsed_dt = datetime.fromisoformat(dt_str_no_tz)
+            return parsed_dt
+        except Exception:
+            raise ValueError(f"Unable to parse datetime string: {dt_str} - {str(e)}")
 
 # Error Handlers
 @app.errorhandler(400)
@@ -465,12 +530,17 @@ def verify_email():
         # Check if code expired
         expiry_str = user.get("verification_code_expiry")
         if expiry_str:
-            expiry_time = datetime.fromisoformat(expiry_str.replace('Z', '+00:00'))
-            if datetime.utcnow() > expiry_time.replace(tzinfo=None):
-                return jsonify({
-                    "success": False,
-                    "error": "Verification code expired. Please request a new code."
-                }), 400
+            try:
+                expiry_time = parse_datetime_string(expiry_str)
+                if datetime.utcnow() > expiry_time:
+                    return jsonify({
+                        "success": False,
+                        "error": "Verification code expired. Please request a new code."
+                    }), 400
+            except ValueError as e:
+                # If we can't parse the datetime, log error but don't fail verification
+                print(f"⚠️  Warning: Could not parse expiry time '{expiry_str}': {str(e)}")
+                # Continue with verification (assume not expired if we can't parse)
         
         # Update user as verified
         update_response = supabase.table("slay_users").update({
@@ -870,7 +940,7 @@ if __name__ == '__main__':
         print("Add them to your .env file\n")
     
     # Run the Flask app
-    port = int(os.getenv('PORT', 5000))
+    port = int(os.getenv('PORT', 8000))
     debug = os.getenv('FLASK_ENV', 'production') == 'development'
     
     print(f"\n✅ Server starting on http://localhost:{port}")
