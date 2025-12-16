@@ -1,38 +1,27 @@
 """
-Email Verification API using Supabase
+Email Verification API using Flask and Supabase
 Handles new user registration and email verification
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from pydantic import BaseModel, EmailStr
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from supabase import create_client, Client
 import os
 import random
 import string
 from datetime import datetime, timedelta
 from typing import Optional
-import uvicorn
+import threading
+from functools import wraps
 
-# Initialize FastAPI app
-app = FastAPI(title="Email Verification API", version="1.0.0")
+# Initialize Flask app
+app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 
 # Supabase Configuration
 SUPABASE_URL = os.getenv("SUPABASE_URL", "your-project-url.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "your-anon-key")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# Models
-class UserRegistration(BaseModel):
-    email: EmailStr
-    password: str
-    full_name: Optional[str] = None
-
-class VerifyCode(BaseModel):
-    email: EmailStr
-    code: str
-
-class ResendCode(BaseModel):
-    email: EmailStr
 
 # Helper Functions
 def generate_verification_code(length: int = 6) -> str:
@@ -46,7 +35,6 @@ def send_verification_email(email: str, code: str, full_name: Optional[str] = No
     """
     try:
         # Option 1: Using Supabase Edge Function
-        # You'll need to create an Edge Function for sending emails
         response = supabase.functions.invoke(
             "send-verification-email",
             invoke_options={
@@ -60,36 +48,125 @@ def send_verification_email(email: str, code: str, full_name: Optional[str] = No
         return response
     except Exception as e:
         print(f"Error sending email: {e}")
-        raise HTTPException(status_code=500, detail="Failed to send verification email")
+        raise Exception("Failed to send verification email")
+
+def send_email_background(email: str, code: str, full_name: Optional[str] = None):
+    """Send email in background thread"""
+    thread = threading.Thread(target=send_verification_email, args=(email, code, full_name))
+    thread.daemon = True
+    thread.start()
+
+def validate_email(email: str) -> bool:
+    """Basic email validation"""
+    import re
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
+
+def validate_password(password: str) -> tuple[bool, str]:
+    """Validate password strength"""
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters long"
+    if not any(c.isupper() for c in password):
+        return False, "Password must contain at least one uppercase letter"
+    if not any(c.islower() for c in password):
+        return False, "Password must contain at least one lowercase letter"
+    if not any(c.isdigit() for c in password):
+        return False, "Password must contain at least one digit"
+    return True, "Valid"
+
+# Error Handlers
+@app.errorhandler(400)
+def bad_request(error):
+    return jsonify({"success": False, "error": str(error)}), 400
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"success": False, "error": "Resource not found"}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({"success": False, "error": "Internal server error"}), 500
 
 # API Endpoints
 
-@app.post("/api/register")
-async def register_user(user: UserRegistration, background_tasks: BackgroundTasks):
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        "status": "healthy",
+        "service": "Email Verification API",
+        "version": "1.0.0",
+        "timestamp": datetime.utcnow().isoformat()
+    }), 200
+
+@app.route('/api/register', methods=['POST'])
+def register_user():
     """
     Register a new user and send verification code
+    
+    Request Body:
+    {
+        "email": "user@example.com",
+        "password": "SecurePass123!",
+        "full_name": "John Doe" (optional)
+    }
     """
     try:
+        # Get request data
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"success": False, "error": "No data provided"}), 400
+        
+        email = data.get('email')
+        password = data.get('password')
+        full_name = data.get('full_name')
+        
+        # Validate required fields
+        if not email or not password:
+            return jsonify({
+                "success": False,
+                "error": "Email and password are required"
+            }), 400
+        
+        # Validate email format
+        if not validate_email(email):
+            return jsonify({
+                "success": False,
+                "error": "Invalid email format"
+            }), 400
+        
+        # Validate password strength
+        is_valid, message = validate_password(password)
+        if not is_valid:
+            return jsonify({
+                "success": False,
+                "error": message
+            }), 400
+        
         # Check if user already exists
-        existing_user = supabase.table("users").select("*").eq("email", user.email).execute()
+        existing_user = supabase.table("users").select("*").eq("email", email).execute()
         
         if existing_user.data and len(existing_user.data) > 0:
             # Check if already verified
             if existing_user.data[0].get("email_verified"):
-                raise HTTPException(status_code=400, detail="Email already registered and verified")
+                return jsonify({
+                    "success": False,
+                    "error": "Email already registered and verified"
+                }), 400
             else:
                 # User exists but not verified, resend code
-                return await resend_verification_code(ResendCode(email=user.email))
+                return resend_verification_code_internal(email)
         
         # Generate verification code
         verification_code = generate_verification_code()
-        expiry_time = datetime.utcnow() + timedelta(minutes=15)  # Code expires in 15 minutes
+        expiry_time = datetime.utcnow() + timedelta(minutes=15)
         
         # Create user record (unverified)
         user_data = {
-            "email": user.email,
-            "password_hash": user.password,  # In production, hash this with bcrypt!
-            "full_name": user.full_name,
+            "email": email,
+            "password_hash": password,  # In production, hash this with bcrypt!
+            "full_name": full_name,
             "email_verified": False,
             "verification_code": verification_code,
             "verification_code_expiry": expiry_time.isoformat(),
@@ -99,118 +176,227 @@ async def register_user(user: UserRegistration, background_tasks: BackgroundTask
         insert_response = supabase.table("users").insert(user_data).execute()
         
         # Send verification email in background
-        background_tasks.add_task(send_verification_email, user.email, verification_code, user.full_name)
+        send_email_background(email, verification_code, full_name)
         
-        return {
+        return jsonify({
             "success": True,
             "message": "Registration successful. Please check your email for verification code.",
-            "email": user.email
-        }
+            "email": email
+        }), 201
         
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": f"Registration failed: {str(e)}"
+        }), 500
 
-
-@app.post("/api/verify-email")
-async def verify_email(verify_data: VerifyCode):
+@app.route('/api/verify-email', methods=['POST'])
+def verify_email():
     """
     Verify user email with the provided code
+    
+    Request Body:
+    {
+        "email": "user@example.com",
+        "code": "123456"
+    }
     """
     try:
+        # Get request data
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"success": False, "error": "No data provided"}), 400
+        
+        email = data.get('email')
+        code = data.get('code')
+        
+        # Validate required fields
+        if not email or not code:
+            return jsonify({
+                "success": False,
+                "error": "Email and code are required"
+            }), 400
+        
         # Fetch user with verification code
-        user_response = supabase.table("users").select("*").eq("email", verify_data.email).execute()
+        user_response = supabase.table("users").select("*").eq("email", email).execute()
         
         if not user_response.data or len(user_response.data) == 0:
-            raise HTTPException(status_code=404, detail="User not found")
+            return jsonify({
+                "success": False,
+                "error": "User not found"
+            }), 404
         
         user = user_response.data[0]
         
         # Check if already verified
         if user.get("email_verified"):
-            return {
+            return jsonify({
                 "success": True,
                 "message": "Email already verified"
-            }
+            }), 200
         
         # Check verification code
-        if user.get("verification_code") != verify_data.code:
-            raise HTTPException(status_code=400, detail="Invalid verification code")
+        if user.get("verification_code") != code:
+            return jsonify({
+                "success": False,
+                "error": "Invalid verification code"
+            }), 400
         
         # Check if code expired
-        expiry_time = datetime.fromisoformat(user.get("verification_code_expiry").replace('Z', '+00:00'))
-        if datetime.utcnow() > expiry_time.replace(tzinfo=None):
-            raise HTTPException(status_code=400, detail="Verification code expired. Please request a new code.")
+        expiry_str = user.get("verification_code_expiry")
+        if expiry_str:
+            expiry_time = datetime.fromisoformat(expiry_str.replace('Z', '+00:00'))
+            if datetime.utcnow() > expiry_time.replace(tzinfo=None):
+                return jsonify({
+                    "success": False,
+                    "error": "Verification code expired. Please request a new code."
+                }), 400
         
         # Update user as verified
         update_response = supabase.table("users").update({
             "email_verified": True,
             "verified_at": datetime.utcnow().isoformat(),
-            "verification_code": None,  # Clear the code
+            "verification_code": None,
             "verification_code_expiry": None
-        }).eq("email", verify_data.email).execute()
+        }).eq("email", email).execute()
         
-        return {
+        return jsonify({
             "success": True,
             "message": "Email verified successfully!",
-            "email": verify_data.email
-        }
+            "email": email
+        }), 200
         
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": f"Verification failed: {str(e)}"
+        }), 500
 
-
-@app.post("/api/resend-code")
-async def resend_verification_code(resend_data: ResendCode, background_tasks: BackgroundTasks = BackgroundTasks()):
+@app.route('/api/resend-code', methods=['POST'])
+def resend_verification_code():
     """
     Resend verification code to user's email
+    
+    Request Body:
+    {
+        "email": "user@example.com"
+    }
     """
     try:
-        # Fetch user
-        user_response = supabase.table("users").select("*").eq("email", resend_data.email).execute()
+        # Get request data
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"success": False, "error": "No data provided"}), 400
+        
+        email = data.get('email')
+        
+        if not email:
+            return jsonify({
+                "success": False,
+                "error": "Email is required"
+            }), 400
+        
+        return resend_verification_code_internal(email)
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Failed to resend code: {str(e)}"
+        }), 500
+
+def resend_verification_code_internal(email: str):
+    """Internal function to resend verification code"""
+    # Fetch user
+    user_response = supabase.table("users").select("*").eq("email", email).execute()
+    
+    if not user_response.data or len(user_response.data) == 0:
+        return jsonify({
+            "success": False,
+            "error": "User not found"
+        }), 404
+    
+    user = user_response.data[0]
+    
+    # Check if already verified
+    if user.get("email_verified"):
+        return jsonify({
+            "success": False,
+            "error": "Email already verified"
+        }), 400
+    
+    # Generate new verification code
+    new_code = generate_verification_code()
+    new_expiry = datetime.utcnow() + timedelta(minutes=15)
+    
+    # Update user with new code
+    supabase.table("users").update({
+        "verification_code": new_code,
+        "verification_code_expiry": new_expiry.isoformat()
+    }).eq("email", email).execute()
+    
+    # Send email in background
+    send_email_background(email, new_code, user.get("full_name"))
+    
+    return jsonify({
+        "success": True,
+        "message": "Verification code resent. Please check your email.",
+        "email": email
+    }), 200
+
+@app.route('/api/user/<email>', methods=['GET'])
+def get_user_status(email):
+    """
+    Get user verification status (for testing/debugging)
+    """
+    try:
+        user_response = supabase.table("users").select(
+            "email, full_name, email_verified, created_at, verified_at"
+        ).eq("email", email).execute()
         
         if not user_response.data or len(user_response.data) == 0:
-            raise HTTPException(status_code=404, detail="User not found")
+            return jsonify({
+                "success": False,
+                "error": "User not found"
+            }), 404
         
-        user = user_response.data[0]
-        
-        # Check if already verified
-        if user.get("email_verified"):
-            raise HTTPException(status_code=400, detail="Email already verified")
-        
-        # Generate new verification code
-        new_code = generate_verification_code()
-        new_expiry = datetime.utcnow() + timedelta(minutes=15)
-        
-        # Update user with new code
-        supabase.table("users").update({
-            "verification_code": new_code,
-            "verification_code_expiry": new_expiry.isoformat()
-        }).eq("email", resend_data.email).execute()
-        
-        # Send email in background
-        background_tasks.add_task(send_verification_email, resend_data.email, new_code, user.get("full_name"))
-        
-        return {
+        return jsonify({
             "success": True,
-            "message": "Verification code resent. Please check your email.",
-            "email": resend_data.email
-        }
+            "user": user_response.data[0]
+        }), 200
         
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to resend code: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": f"Failed to fetch user: {str(e)}"
+        }), 500
 
+# Root endpoint
+@app.route('/', methods=['GET'])
+def index():
+    """API information endpoint"""
+    return jsonify({
+        "service": "Email Verification API",
+        "version": "1.0.0",
+        "endpoints": {
+            "health": "GET /api/health",
+            "register": "POST /api/register",
+            "verify": "POST /api/verify-email",
+            "resend": "POST /api/resend-code",
+            "user_status": "GET /api/user/<email>"
+        },
+        "documentation": "See README.md for detailed API documentation"
+    }), 200
 
-@app.get("/api/health")
-async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "service": "Email Verification API"}
-
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+if __name__ == '__main__':
+    # Load environment variables from .env file
+    from dotenv import load_dotenv
+    load_dotenv()
+    
+    # Run the Flask app
+    port = int(os.getenv('PORT', 5000))
+    debug = os.getenv('FLASK_ENV', 'production') == 'development'
+    
+    print(f"Starting Email Verification API on port {port}...")
+    app.run(host='0.0.0.0', port=port, debug=debug)
