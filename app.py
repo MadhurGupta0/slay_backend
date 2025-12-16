@@ -372,6 +372,105 @@ def get_user_status(email):
             "error": f"Failed to fetch user: {str(e)}"
         }), 500
 
+@app.route('/docs', methods=['GET'])
+def api_docs():
+    """Return API documentation (paths, methods, request/response examples)."""
+    docs = {
+        "service": "Email Verification API",
+        "version": "1.0.0",
+        "endpoints": [
+            {
+                "path": "/api/health",
+                "method": "GET",
+                "description": "Health check",
+                "request_example": None,
+                "response_example": {
+                    "status": "healthy",
+                    "service": "Email Verification API",
+                    "version": "1.0.0",
+                    "timestamp": "2025-12-16T00:00:00.000000"
+                },
+                "status_codes": [200]
+            },
+            {
+                "path": "/api/register",
+                "method": "POST",
+                "description": "Register a new user and send verification code",
+                "request_example": {
+                    "email": "user@example.com",
+                    "password": "SecurePass123!",
+                    "full_name": "John Doe"
+                },
+                "response_example": {
+                    "success": True,
+                    "message": "Registration successful. Please check your email for verification code.",
+                    "email": "user@example.com"
+                },
+                "error_examples": [
+                    {"status":400, "body": {"success": False, "error": "Email and password are required"}},
+                    {"status":400, "body": {"success": False, "error": "Invalid email format"}},
+                    {"status":400, "body": {"success": False, "error": "Password must be at least 8 characters long"}},
+                    {"status":500, "body": {"success": False, "error": "Registration failed: <reason>"}}
+                ],
+                "status_codes": [201, 400, 500]
+            },
+            {
+                "path": "/api/verify-email",
+                "method": "POST",
+                "description": "Verify user email with provided code",
+                "request_example": {
+                    "email": "user@example.com",
+                    "code": "123456"
+                },
+                "response_example": {
+                    "success": True,
+                    "message": "Email verified successfully!",
+                    "email": "user@example.com"
+                },
+                "error_examples": [
+                    {"status":400, "body": {"success": False, "error": "Email and code are required"}},
+                    {"status":400, "body": {"success": False, "error": "Invalid verification code"}},
+                    {"status":400, "body": {"success": False, "error": "Verification code expired. Please request a new code."}},
+                    {"status":404, "body": {"success": False, "error": "User not found"}},
+                    {"status":500, "body": {"success": False, "error": "Verification failed: <reason>"}}
+                ],
+                "status_codes": [200, 400, 404, 500]
+            },
+            {
+                "path": "/api/resend-code",
+                "method": "POST",
+                "description": "Resend verification code to user's email",
+                "request_example": {"email": "user@example.com"},
+                "response_example": {"success": True, "message": "Verification code resent. Please check your email.", "email": "user@example.com"},
+                "error_examples": [
+                    {"status":400, "body": {"success": False, "error": "Email is required"}},
+                    {"status":404, "body": {"success": False, "error": "User not found"}},
+                    {"status":500, "body": {"success": False, "error": "Failed to resend code: <reason>"}}
+                ],
+                "status_codes": [200, 400, 404, 500]
+            },
+            {
+                "path": "/api/user/<email>",
+                "method": "GET",
+                "description": "Get user verification status",
+                "request_example": None,
+                "response_example": {
+                    "success": True,
+                    "user": {
+                        "email": "user@example.com",
+                        "full_name": "John Doe",
+                        "email_verified": False,
+                        "created_at": "2025-12-16T00:00:00.000000",
+                        "verified_at": None
+                    }
+                },
+                "status_codes": [200, 404, 500]
+            }
+        ]
+    }
+
+    return jsonify(docs), 200
+
 # Root endpoint
 @app.route('/', methods=['GET'])
 def index():
@@ -395,7 +494,7 @@ if __name__ == '__main__':
     load_dotenv()
     
     # Run the Flask app
-    port = int(os.getenv('PORT', 5000))
+    port = int(os.getenv('PORT', 8000))
     debug = os.getenv('FLASK_ENV', 'production') == 'development'
     
     print(f"Starting Email Verification API on port {port}...")
