@@ -1,6 +1,6 @@
 """
 Email Verification API using Flask and Supabase
-Handles new user registration and email verification
+Handles new user registration and email 
 """
 
 from flask import Flask, request, jsonify
