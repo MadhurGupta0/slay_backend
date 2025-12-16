@@ -1,0 +1,42 @@
+name: Slay Backend
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS_ONLYCALLS }}
+
+      - name: Azure Container Registry Login
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ secrets.REGISTRY_LOGIN_SERVER_ONLYCALLS }}
+          username: ${{ secrets.REGISTRY_USERNAME_ONLYCALLS }}
+          password: ${{ secrets.REGISTRY_PASSWORD_ONLYCALLS }}
+
+      - name: Build and push Docker image
+        run: |
+          docker build -f Dockerfile -t ${{ secrets.REGISTRY_LOGIN_SERVER_ONLYCALLS }}/slay-baken:${{ github.sha }} .
+          docker push ${{ secrets.REGISTRY_LOGIN_SERVER_ONLYCALLS }}/slay-baken:${{ github.sha }}
+
+      - name: Deploy to Azure Container Apps
+        uses: azure/container-apps-deploy-action@v1
+        with:
+          appSourcePath: ${{ github.workspace }}
+          acrName: onlycalls
+          acrUsername: ${{ secrets.REGISTRY_USERNAME_ONLYCALLS }}
+          acrPassword: ${{ secrets.REGISTRY_PASSWORD_ONLYCALLS }}
+          dockerfilePath: Dockerfile
+          containerAppName: slay-baken
+          resourceGroup: onlycalls
+          imageToDeploy: ${{ secrets.REGISTRY_LOGIN_SERVER_ONLYCALLS }}/slay-baken:${{ github.sha }}
