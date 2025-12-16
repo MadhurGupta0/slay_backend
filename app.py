@@ -294,18 +294,6 @@ def validate_email(email: str) -> bool:
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
 
-def validate_password(password: str) -> tuple[bool, str]:
-    """Validate password strength"""
-    if len(password) < 8:
-        return False, "Password must be at least 8 characters long"
-    if not any(c.isupper() for c in password):
-        return False, "Password must contain at least one uppercase letter"
-    if not any(c.islower() for c in password):
-        return False, "Password must contain at least one lowercase letter"
-    if not any(c.isdigit() for c in password):
-        return False, "Password must contain at least one digit"
-    return True, "Valid"
-
 # Error Handlers
 @app.errorhandler(400)
 def bad_request(error):
@@ -348,7 +336,6 @@ def register_user():
     Request Body:
     {
         "email": "user@example.com",
-        "password": "SecurePass123!",
         "full_name": "John Doe" (optional)
     }
     """
@@ -360,14 +347,13 @@ def register_user():
             return jsonify({"success": False, "error": "No data provided"}), 400
         
         email = data.get('email')
-        password = data.get('password')
         full_name = data.get('full_name')
         
         # Validate required fields
-        if not email or not password:
+        if not email:
             return jsonify({
                 "success": False,
-                "error": "Email and password are required"
+                "error": "Email is required"
             }), 400
         
         # Validate email format
@@ -375,14 +361,6 @@ def register_user():
             return jsonify({
                 "success": False,
                 "error": "Invalid email format"
-            }), 400
-        
-        # Validate password strength
-        is_valid, message = validate_password(password)
-        if not is_valid:
-            return jsonify({
-                "success": False,
-                "error": message
             }), 400
         
         # Check if user already exists
@@ -406,7 +384,6 @@ def register_user():
         # Create user record (unverified)
         user_data = {
             "email": email,
-            "password_hash": password,  # In production, hash this with bcrypt!
             "full_name": full_name,
             "email_verified": False,
             "verification_code": verification_code,
@@ -626,6 +603,223 @@ def get_config():
         "setup_guide": "See RESEND_SETUP.md for configuration instructions"
     }), 200
 
+@app.route('/docs', methods=['GET'])
+def api_docs():
+    """Comprehensive API documentation endpoint"""
+    return jsonify({
+        "title": "Email Verification API Documentation",
+        "version": "3.0.0 (Resend Edition)",
+        "description": "A RESTful API for email verification using Resend email service and Supabase database",
+        "base_url": request.host_url.rstrip('/'),
+        "endpoints": {
+            "GET /": {
+                "description": "API information and endpoint list",
+                "method": "GET",
+                "path": "/",
+                "response": {
+                    "service": "Email Verification API",
+                    "version": "3.0.0 (Resend Edition)",
+                    "endpoints": "List of all available endpoints"
+                }
+            },
+            "GET /docs": {
+                "description": "This comprehensive API documentation",
+                "method": "GET",
+                "path": "/docs"
+            },
+            "GET /api/health": {
+                "description": "Health check endpoint to verify API status and configuration",
+                "method": "GET",
+                "path": "/api/health",
+                "response_example": {
+                    "status": "healthy",
+                    "service": "Email Verification API (Resend)",
+                    "version": "3.0.0 (Resend Edition)",
+                    "timestamp": "2024-01-01T00:00:00.000000",
+                    "configuration": {
+                        "email_provider": "Resend",
+                        "resend_configured": True,
+                        "supabase_configured": True,
+                        "from_email": "onboarding@resend.dev"
+                    }
+                }
+            },
+            "GET /api/config": {
+                "description": "Get current API configuration details",
+                "method": "GET",
+                "path": "/api/config",
+                "response_example": {
+                    "email_provider": "Resend",
+                    "resend_configured": True,
+                    "supabase_configured": True,
+                    "from_email": "onboarding@resend.dev",
+                    "resend_docs": "https://resend.com/docs"
+                }
+            },
+            "POST /api/register": {
+                "description": "Register a new user and send verification code via email",
+                "method": "POST",
+                "path": "/api/register",
+                "request_body": {
+                    "email": "string (required) - Valid email address",
+                    "full_name": "string (optional) - User's full name"
+                },
+                "request_example": {
+                    "email": "user@example.com",
+                    "full_name": "John Doe"
+                },
+                "response_success": {
+                    "success": True,
+                    "message": "Registration successful. Please check your email for verification code.",
+                    "email": "user@example.com",
+                    "note": "Check your inbox (and spam folder) for the verification email from Resend"
+                },
+                "response_error": {
+                    "success": False,
+                    "error": "Error message describing what went wrong"
+                },
+                "status_codes": {
+                    "201": "Registration successful",
+                    "400": "Bad request (invalid email, email already verified, etc.)",
+                    "500": "Internal server error"
+                }
+            },
+            "POST /api/verify-email": {
+                "description": "Verify user email with the provided verification code",
+                "method": "POST",
+                "path": "/api/verify-email",
+                "request_body": {
+                    "email": "string (required) - User's email address",
+                    "code": "string (required) - 6-digit verification code"
+                },
+                "request_example": {
+                    "email": "user@example.com",
+                    "code": "123456"
+                },
+                "response_success": {
+                    "success": True,
+                    "message": "Email verified successfully! 🎉",
+                    "email": "user@example.com"
+                },
+                "response_error": {
+                    "success": False,
+                    "error": "Error message (invalid code, expired code, user not found, etc.)"
+                },
+                "status_codes": {
+                    "200": "Email verified successfully or already verified",
+                    "400": "Bad request (invalid code, expired code, etc.)",
+                    "404": "User not found",
+                    "500": "Internal server error"
+                },
+                "notes": [
+                    "Verification codes expire after 15 minutes",
+                    "If code expires, use /api/resend-code to get a new one"
+                ]
+            },
+            "POST /api/resend-code": {
+                "description": "Resend verification code to user's email",
+                "method": "POST",
+                "path": "/api/resend-code",
+                "request_body": {
+                    "email": "string (required) - User's email address"
+                },
+                "request_example": {
+                    "email": "user@example.com"
+                },
+                "response_success": {
+                    "success": True,
+                    "message": "Verification code resent via Resend. Please check your email.",
+                    "email": "user@example.com"
+                },
+                "response_error": {
+                    "success": False,
+                    "error": "Error message (user not found, email already verified, etc.)"
+                },
+                "status_codes": {
+                    "200": "Code resent successfully",
+                    "400": "Bad request (email already verified, etc.)",
+                    "404": "User not found",
+                    "500": "Internal server error"
+                }
+            },
+            "GET /api/user/<email>": {
+                "description": "Get user verification status (for testing/debugging)",
+                "method": "GET",
+                "path": "/api/user/<email>",
+                "path_parameters": {
+                    "email": "string (required) - User's email address (URL encoded)"
+                },
+                "example_path": "/api/user/user%40example.com",
+                "response_success": {
+                    "success": True,
+                    "user": {
+                        "email": "user@example.com",
+                        "full_name": "John Doe",
+                        "email_verified": True,
+                        "created_at": "2024-01-01T00:00:00.000000",
+                        "verified_at": "2024-01-01T00:05:00.000000"
+                    }
+                },
+                "response_error": {
+                    "success": False,
+                    "error": "User not found"
+                },
+                "status_codes": {
+                    "200": "User found",
+                    "404": "User not found",
+                    "500": "Internal server error"
+                }
+            }
+        },
+        "authentication": {
+            "type": "None",
+            "note": "This API does not require authentication. All endpoints are publicly accessible."
+        },
+        "error_handling": {
+            "format": "All error responses follow this format:",
+            "example": {
+                "success": False,
+                "error": "Descriptive error message"
+            },
+            "common_status_codes": {
+                "400": "Bad Request - Invalid input or validation error",
+                "404": "Not Found - Resource not found",
+                "500": "Internal Server Error - Server-side error"
+            }
+        },
+        "rate_limiting": {
+            "note": "Rate limiting may be implemented in production. Check response headers for rate limit information."
+        },
+        "email_service": {
+            "provider": "Resend",
+            "verification_code_expiry": "15 minutes",
+            "code_format": "6-digit numeric code",
+            "documentation": "https://resend.com/docs"
+        },
+        "database": {
+            "provider": "Supabase",
+            "note": "User data is stored in Supabase database"
+        },
+        "examples": {
+            "register_user": {
+                "curl": "curl -X POST http://localhost:5000/api/register -H 'Content-Type: application/json' -d '{\"email\":\"user@example.com\",\"full_name\":\"John Doe\"}'",
+                "python": "import requests\nresponse = requests.post('http://localhost:5000/api/register', json={'email': 'user@example.com', 'full_name': 'John Doe'})"
+            },
+            "verify_email": {
+                "curl": "curl -X POST http://localhost:5000/api/verify-email -H 'Content-Type: application/json' -d '{\"email\":\"user@example.com\",\"code\":\"123456\"}'",
+                "python": "import requests\nresponse = requests.post('http://localhost:5000/api/verify-email', json={'email': 'user@example.com', 'code': '123456'})"
+            },
+            "resend_code": {
+                "curl": "curl -X POST http://localhost:5000/api/resend-code -H 'Content-Type: application/json' -d '{\"email\":\"user@example.com\"}'",
+                "python": "import requests\nresponse = requests.post('http://localhost:5000/api/resend-code', json={'email': 'user@example.com'})"
+            }
+        },
+        "support": {
+            "documentation": "See RESEND_SETUP.md for setup instructions",
+            "resend_docs": "https://resend.com/docs"
+        }
+    }), 200
+
 # Root endpoint
 @app.route('/', methods=['GET'])
 def index():
@@ -635,6 +829,7 @@ def index():
         "version": "3.0.0 (Resend Edition)",
         "email_provider": "Resend",
         "endpoints": {
+            "docs": "GET /docs - Comprehensive API documentation",
             "health": "GET /api/health",
             "config": "GET /api/config",
             "register": "POST /api/register",
@@ -642,7 +837,7 @@ def index():
             "resend": "POST /api/resend-code",
             "user_status": "GET /api/user/<email>"
         },
-        "documentation": "See RESEND_SETUP.md for setup instructions"
+        "documentation": "GET /docs for full API documentation or see RESEND_SETUP.md for setup instructions"
     }), 200
 
 if __name__ == '__main__':
@@ -679,7 +874,8 @@ if __name__ == '__main__':
     debug = os.getenv('FLASK_ENV', 'production') == 'development'
     
     print(f"\n✅ Server starting on http://localhost:{port}")
-    print(f"📚 API Documentation: http://localhost:{port}/")
+    print(f"📚 API Documentation: http://localhost:{port}/docs")
+    print(f"📖 API Info: http://localhost:{port}/")
     print(f"❤️  Health Check: http://localhost:{port}/api/health")
     print("="*70 + "\n")
     
