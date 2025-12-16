@@ -49,7 +49,7 @@ def send_verification_email(email: str, code: str, full_name: Optional[str] = No
         return response
     except Exception as e:
         print(f"Error sending email: {e}")
-        raise Exception("Failed to send verification email")
+        return e
 
 def send_email_background(email: str, code: str, full_name: Optional[str] = None):
     """Send email in background thread"""
