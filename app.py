@@ -45,6 +45,7 @@ def send_verification_email(email: str, code: str, full_name: Optional[str] = No
                 }
             }
         )
+        print(response)
         return response
     except Exception as e:
         print(f"Error sending email: {e}")
@@ -52,9 +53,7 @@ def send_verification_email(email: str, code: str, full_name: Optional[str] = No
 
 def send_email_background(email: str, code: str, full_name: Optional[str] = None):
     """Send email in background thread"""
-    thread = threading.Thread(target=send_verification_email, args=(email, code, full_name))
-    thread.daemon = True
-    thread.start()
+    send_verification_email(email, code, full_name)
 
 def validate_email(email: str) -> bool:
     """Basic email validation"""
@@ -167,12 +166,13 @@ def register_user():
         insert_response = supabase.table("slay_users").insert(user_data).execute()
         
         # Send verification email in background
-        send_email_background(email, verification_code, full_name)
+        resposnse=send_email_background(email, verification_code, full_name)
         
         return jsonify({
             "success": True,
             "message": "Registration successful. Please check your email for verification code.",
-            "email": email
+            "email": email,
+            "response":resposnse
         }), 201
         
     except Exception as e:
