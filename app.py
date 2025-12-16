@@ -364,7 +364,7 @@ def register_user():
             }), 400
         
         # Check if user already exists
-        existing_user = supabase.table("users").select("*").eq("email", email).execute()
+        existing_user = supabase.table("slay_users").select("*").eq("email", email).execute()
         
         if existing_user.data and len(existing_user.data) > 0:
             # Check if already verified
@@ -391,7 +391,7 @@ def register_user():
             "created_at": datetime.utcnow().isoformat()
         }
         
-        insert_response = supabase.table("users").insert(user_data).execute()
+        insert_response = supabase.table("slay_users").insert(user_data).execute()
         
         # Send verification email via Resend in background
         send_email_background(email, verification_code, full_name)
@@ -438,7 +438,7 @@ def verify_email():
             }), 400
         
         # Fetch user with verification code
-        user_response = supabase.table("users").select("*").eq("email", email).execute()
+        user_response = supabase.table("slay_users").select("*").eq("email", email).execute()
         
         if not user_response.data or len(user_response.data) == 0:
             return jsonify({
@@ -473,7 +473,7 @@ def verify_email():
                 }), 400
         
         # Update user as verified
-        update_response = supabase.table("users").update({
+        update_response = supabase.table("slay_users").update({
             "email_verified": True,
             "verified_at": datetime.utcnow().isoformat(),
             "verification_code": None,
@@ -528,7 +528,7 @@ def resend_verification_code():
 def resend_verification_code_internal(email: str):
     """Internal function to resend verification code"""
     # Fetch user
-    user_response = supabase.table("users").select("*").eq("email", email).execute()
+    user_response = supabase.table("slay_users").select("*").eq("email", email).execute()
     
     if not user_response.data or len(user_response.data) == 0:
         return jsonify({
@@ -550,7 +550,7 @@ def resend_verification_code_internal(email: str):
     new_expiry = datetime.utcnow() + timedelta(minutes=15)
     
     # Update user with new code
-    supabase.table("users").update({
+    supabase.table("slay_users").update({
         "verification_code": new_code,
         "verification_code_expiry": new_expiry.isoformat()
     }).eq("email", email).execute()
@@ -570,7 +570,7 @@ def get_user_status(email):
     Get user verification status (for testing/debugging)
     """
     try:
-        user_response = supabase.table("users").select(
+        user_response = supabase.table("slay_users").select(
             "email, full_name, email_verified, created_at, verified_at"
         ).eq("email", email).execute()
         
@@ -870,7 +870,7 @@ if __name__ == '__main__':
         print("Add them to your .env file\n")
     
     # Run the Flask app
-    port = int(os.getenv('PORT', 8000))
+    port = int(os.getenv('PORT', 5000))
     debug = os.getenv('FLASK_ENV', 'production') == 'development'
     
     print(f"\n✅ Server starting on http://localhost:{port}")
