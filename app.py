@@ -713,6 +713,201 @@ def verify_invite_code():
             "error": f"Invite code verification failed: {str(e)}"
         }), 500
 
+
+@app.route('/api/validate-username', methods=['POST'])
+def validate_username():
+    """
+    Validate a username and recommend alternatives if it's not valid or already taken.
+
+    Request Body:
+    {
+        "username": "desired_username",
+        "email": "user@example.com"
+    }
+
+    Response (valid and available):
+    {
+        "success": True,
+        "valid": True,
+        "available": True,
+        "username": "desired_username"
+    }
+
+    Response (invalid or taken):
+    {
+        "success": True,
+        "valid": False,
+        "available": False,
+        "username": "bad_or_taken_name",
+        "message": "Reason why it's not valid/available",
+        "suggestions": ["suggestion1", "suggestion2", ...]
+    }
+    """
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({"success": False, "error": "No data provided"}), 400
+
+        raw_username = data.get("username", "")
+        email = data.get("email")
+
+        if not raw_username:
+            return jsonify({
+                "success": False,
+                "error": "Username is required"
+            }), 400
+
+        if not email:
+            return jsonify({
+                "success": False,
+                "error": "Email is required"
+            }), 400
+
+        # Validate email format using existing helper
+        if not validate_email(email):
+            return jsonify({
+                "success": False,
+                "error": "Invalid email format"
+            }), 400
+
+        username = raw_username.strip()
+
+        # Basic format validation rules:
+        # - 3 to 20 characters
+        # - Letters, numbers, underscores, and dots
+        # - Cannot start or end with '.' or '_'
+        # - No spaces
+        import re  # local import to keep top imports unchanged
+
+        pattern = r'^[A-Za-z0-9](?:[A-Za-z0-9._]{1,18})[A-Za-z0-9]$'
+
+        valid_format = bool(re.match(pattern, username))
+
+        # Additional length guard (in case regex is edited in future)
+        if len(username) < 3 or len(username) > 20:
+            valid_format = False
+
+        # Check if username already exists in Supabase (if column present)
+        available = True
+        if valid_format:
+            try:
+                existing = supabase.table("slay_users").select("id").eq("username", username).execute()
+                if existing.data and len(existing.data) > 0:
+                    available = False
+            except Exception as e:
+                # Don't hard-fail on DB schema issues; just report format validity
+                print(f"⚠️ Username availability check failed: {str(e)}")
+
+        # If valid format and available, save it in Supabase for this email and return success
+        if valid_format and available:
+            try:
+                # Try to find existing user by email
+                user_response = supabase.table("slay_users").select("*").eq("email", email).execute()
+                now_iso = datetime.utcnow().isoformat()
+
+                if user_response.data and len(user_response.data) > 0:
+                    # Update existing user with username
+                    supabase.table("slay_users").update({
+                        "username": username
+                    }).eq("email", email).execute()
+                else:
+                    # Create a minimal user record with email and username
+                    supabase.table("slay_users").insert({
+                        "email": email,
+                        "username": username,
+                        "created_at": now_iso
+                    }).execute()
+            except Exception as e:
+                # Fail clearly if we can't persist the username
+                return jsonify({
+                    "success": False,
+                    "error": f"Failed to store username in database: {str(e)}"
+                }), 500
+
+            return jsonify({
+                "success": True,
+                "valid": True,
+                "available": True,
+                "username": username
+            }), 200
+
+        # Build reason message
+        if not valid_format:
+            message = (
+                "Username must be 3-20 characters, use only letters, numbers, dots and underscores, "
+                "and cannot start or end with a dot or underscore."
+            )
+        else:
+            message = "Username is already taken."
+
+        # Generate suggestions and pick a recommended username that is actually available
+        base = re.sub(r'[^A-Za-z0-9]', '', username)
+        if not base:
+            base = "user"
+        base = base[:15]  # leave room for suffixes
+
+        import random
+
+        suggestions = []
+        tried = set()
+
+        def add_candidate(candidate: str):
+            cand = candidate[:20]  # enforce max length
+            if cand not in tried:
+                tried.add(cand)
+                suggestions.append(cand)
+
+        # Some candidate variants
+        add_candidate(base)
+        add_candidate(f"{base}{random.randint(1, 99)}")
+        add_candidate(f"{base}_{random.randint(1, 999)}")
+        add_candidate(f"{base}.{random.randint(1, 999)}")
+        add_candidate(f"{base}{random.randint(1000, 9999)}")
+
+        # Ensure we have a few more random options
+        while len(suggestions) < 8:
+            add_candidate(f"{base}{random.randint(1, 99999)}")
+
+        recommended_username = None
+
+        # Check Supabase to find the first available suggestion
+        try:
+            for candidate in suggestions:
+                # Re-check format guard (in case base is weird)
+                if len(candidate) < 3 or len(candidate) > 20:
+                    continue
+                if not re.match(pattern, candidate):
+                    continue
+
+                existing = supabase.table("slay_users").select("id").eq("username", candidate).execute()
+                if not existing.data or len(existing.data) == 0:
+                    recommended_username = candidate
+                    break
+        except Exception as e:
+            print(f"⚠️ Username suggestion availability check failed: {str(e)}")
+
+        # Fallback if DB check failed or all taken
+        if not recommended_username and suggestions:
+            recommended_username = suggestions[0]
+
+        return jsonify({
+            "success": True,
+            "valid": valid_format,
+            "available": available,
+            "username": username,
+            "message": message,
+            "suggestions": suggestions,
+            "recommended_username": recommended_username
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Username validation failed: {str(e)}"
+        }), 500
+
+
 @app.route('/api/user/<email>', methods=['GET'])
 def get_user_status(email):
     """
@@ -891,6 +1086,50 @@ def api_docs():
                     "500": "Internal server error"
                 }
             },
+            "POST /api/validate-username": {
+                "description": "Validate a username and recommend alternatives if it's not valid or already taken",
+                "method": "POST",
+                "path": "/api/validate-username",
+                "request_body": {
+                    "username": "string (required) - Desired username to validate",
+                    "email": "string (required) - User's email address that this username should be associated with"
+                },
+                "request_example": {
+                    "username": "cool_username",
+                    "email": "user@example.com"
+                },
+                "response_success_valid": {
+                    "success": True,
+                    "valid": True,
+                    "available": True,
+                    "username": "cool_username"
+                },
+                "response_success_invalid_or_taken": {
+                    "success": True,
+                    "valid": False,
+                    "available": False,
+                    "username": "cool_username",
+                    "message": "Username is already taken.",
+                    "suggestions": [
+                        "cool_username1",
+                        "cool_username_23"
+                    ],
+                    "recommended_username": "cool_username_23"
+                },
+                "status_codes": {
+                    "200": "Request processed successfully (username details returned regardless of validity)",
+                    "400": "Bad request (missing username field)",
+                    "500": "Internal server error"
+                },
+                "notes": [
+                    "Usernames must be 3-20 characters long",
+                    "Allowed characters: letters, numbers, dots, and underscores",
+                    "Usernames cannot start or end with a dot or underscore",
+                    "If username is invalid or taken, suggestions are returned",
+                    "If username is valid and available, it is stored in Supabase for the given email",
+                    "If username is invalid or taken, a recommended_username is returned that is checked for availability"
+                ]
+            },
             "POST /api/verify-invite-code": {
                 "description": "Verify invite code for user registration and update Supabase to mark user as invited",
                 "method": "POST",
@@ -1023,6 +1262,7 @@ def index():
             "register": "POST /api/register",
             "verify": "POST /api/verify-email",
             "resend": "POST /api/resend-code",
+            "validate_username": "POST /api/validate-username",
             "verify_invite": "POST /api/verify-invite-code",
             "user_status": "GET /api/user/<email>"
         },
