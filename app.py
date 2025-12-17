@@ -634,6 +634,85 @@ def resend_verification_code_internal(email: str):
         "email": email
     }), 200
 
+@app.route('/api/verify-invite-code', methods=['POST'])
+def verify_invite_code():
+    """
+    Verify invite code for user registration
+    
+    Request Body:
+    {
+        "email": "user@example.com",
+        "invite_code": "SLAY1111"
+    }
+    """
+    try:
+        # Get request data
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"success": False, "error": "No data provided"}), 400
+        
+        email = data.get('email')
+        invite_code = data.get('invite_code')
+        
+        # Validate required fields
+        if not email or not invite_code:
+            return jsonify({
+                "success": False,
+                "error": "Email and invite_code are required"
+            }), 400
+        
+        # Validate email format
+        if not validate_email(email):
+            return jsonify({
+                "success": False,
+                "error": "Invalid email format"
+            }), 400
+        
+        # Verify invite code
+        VALID_INVITE_CODE = "SLAY1111"
+        if invite_code != VALID_INVITE_CODE:
+            return jsonify({
+                "success": False,
+                "error": "Invalid invite code"
+            }), 400
+        
+        # Check if user exists in Supabase
+        user_response = supabase.table("slay_users").select("*").eq("email", email).execute()
+        
+        current_time = datetime.utcnow().isoformat()
+        
+        if user_response.data and len(user_response.data) > 0:
+            # User exists, update to mark as invited
+            user = user_response.data[0]
+            
+            # Update user to mark as invited
+            update_data = {
+                "invited": True,
+                "invited_at": current_time
+            }
+            
+            supabase.table("slay_users").update(update_data).eq("email", email).execute()
+        else:
+            # User doesn't exist, create new user record with invited status
+            return jsonify({
+            "success": False,
+            "error": f"Invite code verification failed: User not found"
+        }), 500
+        
+        return jsonify({
+            "success": True,
+            "message": "Invite code verified successfully! 🎉",
+            "email": email,
+            "invited": True
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Invite code verification failed: {str(e)}"
+        }), 500
+
 @app.route('/api/user/<email>', methods=['GET'])
 def get_user_status(email):
     """
@@ -812,6 +891,41 @@ def api_docs():
                     "500": "Internal server error"
                 }
             },
+            "POST /api/verify-invite-code": {
+                "description": "Verify invite code for user registration and update Supabase to mark user as invited",
+                "method": "POST",
+                "path": "/api/verify-invite-code",
+                "request_body": {
+                    "email": "string (required) - User's email address",
+                    "invite_code": "string (required) - Invite code (must be SLAY1111)"
+                },
+                "request_example": {
+                    "email": "user@example.com",
+                    "invite_code": "SLAY1111"
+                },
+                "response_success": {
+                    "success": True,
+                    "message": "Invite code verified successfully! 🎉",
+                    "email": "user@example.com",
+                    "invited": True
+                },
+                "response_error": {
+                    "success": False,
+                    "error": "Error message (invalid invite code, invalid email format, etc.)"
+                },
+                "status_codes": {
+                    "200": "Invite code verified successfully and user marked as invited in Supabase",
+                    "400": "Bad request (invalid invite code, invalid email format, missing fields)",
+                    "500": "Internal server error"
+                },
+                "notes": [
+                    "The valid invite code is: SLAY1111",
+                    "Email format is validated before invite code verification",
+                    "If user exists in Supabase, their record is updated with invited=True and invited_at timestamp",
+                    "If user doesn't exist, a new user record is created with invited=True",
+                    "If user is already invited, returns success with already_invited flag"
+                ]
+            },
             "GET /api/user/<email>": {
                 "description": "Get user verification status (for testing/debugging)",
                 "method": "GET",
@@ -882,6 +996,10 @@ def api_docs():
             "resend_code": {
                 "curl": "curl -X POST http://localhost:5000/api/resend-code -H 'Content-Type: application/json' -d '{\"email\":\"user@example.com\"}'",
                 "python": "import requests\nresponse = requests.post('http://localhost:5000/api/resend-code', json={'email': 'user@example.com'})"
+            },
+            "verify_invite_code": {
+                "curl": "curl -X POST http://localhost:5000/api/verify-invite-code -H 'Content-Type: application/json' -d '{\"email\":\"user@example.com\",\"invite_code\":\"SLAY1111\"}'",
+                "python": "import requests\nresponse = requests.post('http://localhost:5000/api/verify-invite-code', json={'email': 'user@example.com', 'invite_code': 'SLAY1111'})"
             }
         },
         "support": {
@@ -905,6 +1023,7 @@ def index():
             "register": "POST /api/register",
             "verify": "POST /api/verify-email",
             "resend": "POST /api/resend-code",
+            "verify_invite": "POST /api/verify-invite-code",
             "user_status": "GET /api/user/<email>"
         },
         "documentation": "GET /docs for full API documentation or see RESEND_SETUP.md for setup instructions"
