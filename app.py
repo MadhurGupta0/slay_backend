@@ -32,7 +32,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Resend Configuration
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "re_VgndXmD1_GVpJezaQpNZU4M3B3uAnJ6XV")
-FROM_EMAIL = os.getenv("FROM_EMAIL", "onboarding@resend.dev")  # Default Resend test email
+FROM_EMAIL = os.getenv("FROM_EMAIL", "onboarding@slay.money")  # Default Resend test email
 
 # Helper Functions
 def generate_verification_code(length: int = 6) -> str:
@@ -1276,7 +1276,7 @@ if __name__ == '__main__':
     
     # Re-load variables after dotenv
     RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
-    FROM_EMAIL = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
+    FROM_EMAIL = os.getenv("FROM_EMAIL", "onboarding@slay.money")
     
     # Display configuration on startup
     print("\n" + "="*70)
