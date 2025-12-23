@@ -2550,9 +2550,26 @@ def api_docs_html():
     """Interactive HTML API documentation"""
     base_url = request.host_url.rstrip('/')
     
-    # Use the same data structure as /docs endpoint
-    # We'll fetch it via JavaScript from /docs endpoint
+    # Get the same docs data as /docs endpoint by calling it internally
     from flask import render_template_string
+    import json
+    
+    # Call the api_docs function to get the data
+    # We'll use Flask's test client to call our own endpoint
+    with app.test_client() as client:
+        try:
+            response = client.get('/docs')
+            if response.status_code == 200:
+                docs_data = response.get_json()
+            else:
+                docs_data = {"endpoints": {}}
+        except Exception as e:
+            # Fallback if something goes wrong
+            docs_data = {"endpoints": {}}
+    
+    # Clean the data and prepare JSON
+    cleaned_docs_data = remove_ellipsis(docs_data)
+    endpoints_json = json.dumps(cleaned_docs_data.get("endpoints", {}))
     
     html_template = """
 <!DOCTYPE html>
@@ -2872,17 +2889,44 @@ def api_docs_html():
     <script>
         const baseUrl = '{{ base_url }}';
         
-        // Fetch endpoints data
-        fetch(baseUrl + '/docs')
-            .then(response => response.json())
-            .then(data => {
-                renderEndpoints(data.endpoints);
-            })
-            .catch(error => {
-                console.error('Error loading documentation:', error);
-                document.getElementById('endpointsContainer').innerHTML = 
-                    '<div class="info-box warning">Error loading documentation. Please try again.</div>';
-            });
+        // Use embedded endpoints data
+        try {
+            const endpointsData = {{ endpoints_json|safe }};
+            if (endpointsData && Object.keys(endpointsData).length > 0) {
+                renderEndpoints(endpointsData);
+            } else {
+                // Fallback: try fetching from /docs endpoint
+                fetch(baseUrl + '/docs')
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        if (data && data.endpoints) {
+                            renderEndpoints(data.endpoints);
+                        } else {
+                            throw new Error('Invalid response format: missing endpoints');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error loading documentation:', error);
+                        const errorMsg = error.message || 'Unknown error occurred';
+                        document.getElementById('endpointsContainer').innerHTML = 
+                            '<div class="info-box warning">' +
+                            '<h4>Error loading documentation</h4>' +
+                            '<p>' + errorMsg + '</p>' +
+                            '<p>Please check the browser console for more details.</p>' +
+                            '<p>Try visiting <a href="/docs" target="_blank">/docs</a> to verify the API is working.</p>' +
+                            '</div>';
+                    });
+            }
+        } catch (error) {
+            console.error('Error parsing endpoints data:', error);
+            document.getElementById('endpointsContainer').innerHTML = 
+                '<div class="info-box warning">Error parsing documentation data. Please try again.</div>';
+        }
         
         function renderEndpoints(endpoints) {
             const container = document.getElementById('endpointsContainer');
@@ -3059,7 +3103,8 @@ def api_docs_html():
                                  title="Email Verification API Documentation",
                                  version="3.0.0 (Resend Edition)",
                                  description="A RESTful API for email verification using Resend email service and Supabase database",
-                                 base_url=base_url)
+                                 base_url=base_url,
+                                 endpoints_json=endpoints_json)
 
 # Root endpoint
 @app.route('/', methods=['GET'])
@@ -3129,4 +3174,3 @@ if __name__ == '__main__':
     print("="*70 + "\n")
     
     app.run(host='0.0.0.0', port=port, debug=debug)
-
