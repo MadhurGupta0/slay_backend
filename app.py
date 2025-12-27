@@ -3304,7 +3304,7 @@ if __name__ == '__main__':
         print("Add them to your .env file\n")
     
     # Run the Flask app
-    port = int(os.getenv('PORT', 5000))
+    port = int(os.getenv('PORT', 8000))
     debug = os.getenv('FLASK_ENV', 'production') == 'development'
     
     print(f"\n✅ Server starting on http://localhost:{port}")
