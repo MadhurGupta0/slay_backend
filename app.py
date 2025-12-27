@@ -1,6 +1,10 @@
 """
-Email Verification API using Flask and Supabase - RESEND VERSION
-Configured to use Resend API for professional email delivery
+Mobile App Backend API - Email Verification & Authentication
+Flask-based backend API for iOS/Android mobile applications
+- Email verification with Resend API
+- Passwordless authentication (OTP + Passkeys/WebAuthn)
+- User registration and management
+- Passkey support for iOS (ASAuthorizationController) and Android (Fido2ApiClient)
 """
 
 from flask import Flask, request, jsonify
@@ -50,10 +54,12 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 RESEND_API_KEY ="re_VgndXmD1_GVpJezaQpNZU4M3B3uAnJ6XV"
 FROM_EMAIL =  "onboarding@slay.money"  # Default Resend test email
 
-# WebAuthn/Passkey Configuration
-RP_ID = os.getenv("RP_ID", "localhost")  # Relying Party ID (your domain)
+# WebAuthn/Passkey Configuration for Mobile Apps
+# RP_ID: Relying Party ID - domain or app identifier (for mobile: bundle ID/package name)
+RP_ID = os.getenv("RP_ID", "slay.money")  # Relying Party ID (domain or app identifier)
 RP_NAME = os.getenv("RP_NAME", "Slay Money")  # Relying Party Name
-ORIGIN = os.getenv("ORIGIN", "http://localhost:5000")  # Origin for WebAuthn
+# ORIGIN: Origin for WebAuthn verification (mobile apps use bundle ID/package name)
+ORIGIN = os.getenv("ORIGIN", "https://slay.money")  # Origin for WebAuthn (mobile app origin)
 
 # Helper Functions
 def generate_verification_code(length: int = 6) -> str:
@@ -71,8 +77,8 @@ def remove_ellipsis(obj):
         # Convert sets to lists for JSON serialization
         return [remove_ellipsis(item) for item in obj if item is not ...]
     elif isinstance(obj, bytes):
-        # Convert bytes to base64 string for JSON serialization
-        return base64.b64encode(obj).decode('utf-8')
+        # Convert bytes to base64 URL-safe string for JSON serialization (WebAuthn uses URL-safe base64)
+        return base64.urlsafe_b64encode(obj).decode('utf-8').rstrip('=')
     elif obj is ...:
         return None
     else:
@@ -660,6 +666,9 @@ def store_passkey_credential(email: str, credential_id: str, public_key: bytes, 
         if not isinstance(existing_credentials, list):
             existing_credentials = []
         
+        # Remove any temporary challenge entries (cleanup)
+        existing_credentials = [c for c in existing_credentials if not (isinstance(c, dict) and c.get("_temp"))]
+        
         # Convert public_key bytes to base64 for storage
         public_key_b64 = base64.b64encode(public_key).decode('utf-8')
         
@@ -696,7 +705,8 @@ def get_passkey_credentials(email: str) -> list:
         if not isinstance(credentials, list):
             return []
         
-        return credentials
+        # Filter out temporary challenge entries
+        return [c for c in credentials if not (isinstance(c, dict) and c.get("_temp"))]
     except Exception as e:
         print(f"Error getting passkey credentials: {str(e)}")
         return []
@@ -734,6 +744,109 @@ def update_sign_count(email: str, credential_id: str, new_sign_count: int):
         print(f"Error updating sign count: {str(e)}")
         raise
 
+def store_webauthn_challenge(email: str, challenge_str: str, expiry_minutes: int = 5):
+    """
+    Store WebAuthn challenge. Handles both TEXT and VARCHAR(10) column types.
+    If verification_code is too short, stores in passkey_credentials JSONB as metadata.
+    """
+    try:
+        # Try storing in verification_code first (works if column is TEXT)
+        supabase.table("slay_users").update({
+            "verification_code": challenge_str,
+            "verification_code_expiry": (datetime.utcnow() + timedelta(minutes=expiry_minutes)).isoformat()
+        }).eq("email", email).execute()
+        return True
+    except Exception as db_error:
+        # If verification_code is VARCHAR(10) and too short, use JSONB workaround
+        error_str = str(db_error)
+        if "too long" in error_str.lower() or "character varying" in error_str.lower() or "22001" in error_str:
+            # Store challenge in passkey_credentials as temporary metadata
+            user = get_user_by_email(email)
+            if not user:
+                raise ValueError("User not found")
+            
+            existing_credentials = user.get("passkey_credentials", [])
+            if not isinstance(existing_credentials, list):
+                existing_credentials = []
+            
+            # Add challenge as temporary entry (will be removed after use)
+            # Store with a special prefix to identify it
+            challenge_entry = {
+                "_webauthn_challenge": challenge_str,
+                "_challenge_expiry": (datetime.utcnow() + timedelta(minutes=expiry_minutes)).isoformat(),
+                "_temp": True
+            }
+            
+            # Prepend to credentials array (will be first entry)
+            existing_credentials.insert(0, challenge_entry)
+            
+            supabase.table("slay_users").update({
+                "passkey_credentials": existing_credentials,
+                "verification_code_expiry": (datetime.utcnow() + timedelta(minutes=expiry_minutes)).isoformat()
+            }).eq("email", email).execute()
+            return True
+        else:
+            raise
+
+def get_webauthn_challenge(email: str) -> Optional[str]:
+    """
+    Retrieve WebAuthn challenge. Checks both verification_code and passkey_credentials JSONB.
+    """
+    try:
+        user = get_user_by_email(email)
+        if not user:
+            return None
+        
+        # First, try to get from verification_code
+        verification_code = user.get("verification_code")
+        if verification_code and len(verification_code) > 10:
+            # Likely a WebAuthn challenge (longer than 6-digit code)
+            return verification_code
+        
+        # If not in verification_code, check passkey_credentials for temp challenge
+        credentials = user.get("passkey_credentials", [])
+        if isinstance(credentials, list) and len(credentials) > 0:
+            first_entry = credentials[0]
+            if isinstance(first_entry, dict) and first_entry.get("_temp") and first_entry.get("_webauthn_challenge"):
+                # Check if expired
+                expiry_str = first_entry.get("_challenge_expiry")
+                if expiry_str:
+                    try:
+                        expiry = parse_datetime_string(expiry_str)
+                        if datetime.utcnow() < expiry:
+                            return first_entry.get("_webauthn_challenge")
+                    except:
+                        pass
+        
+        return None
+    except Exception as e:
+        print(f"Error getting WebAuthn challenge: {str(e)}")
+        return None
+
+def clear_webauthn_challenge(email: str):
+    """Clear WebAuthn challenge from both verification_code and passkey_credentials"""
+    try:
+        user = get_user_by_email(email)
+        if not user:
+            return
+        
+        # Clear verification_code
+        update_data = {
+            "verification_code": None,
+            "verification_code_expiry": None
+        }
+        
+        # Also remove temp challenge from passkey_credentials if present
+        credentials = user.get("passkey_credentials", [])
+        if isinstance(credentials, list) and len(credentials) > 0:
+            # Remove temp challenge entries
+            credentials = [c for c in credentials if not (isinstance(c, dict) and c.get("_temp"))]
+            update_data["passkey_credentials"] = credentials
+        
+        supabase.table("slay_users").update(update_data).eq("email", email).execute()
+    except Exception as e:
+        print(f"Error clearing WebAuthn challenge: {str(e)}")
+
 # Error Handlers
 @app.errorhandler(400)
 def bad_request(error):
@@ -757,7 +870,7 @@ def health_check():
     
     return jsonify({
         "status": "healthy",
-        "service": "Email Verification API (Resend)",
+        "service": "Mobile App Backend API - Email Verification (Resend)",
         "version": "3.0.0 (Resend Edition)",
         "timestamp": datetime.utcnow().isoformat(),
         "configuration": {
@@ -778,7 +891,7 @@ def register_user():
     {
         "email": "user@example.com",
         "full_name": "John Doe" (optional),
-        "credential": {...} (optional) - WebAuthn credential from browser for passkey registration,
+        "credential": {...} (optional) - WebAuthn credential from mobile app (iOS/Android) for passkey registration,
         "challenge": "..." (optional) - Challenge string used to generate the credential,
         "device_name": "iPhone 15" (optional) - Name of the device/authenticator
     }
@@ -1621,25 +1734,40 @@ def passkey_register_begin():
         # Store challenge temporarily
         # If user exists, store in user record; otherwise, we'll return it for client to store temporarily
         if user:
-            supabase.table("slay_users").update({
-                "verification_code": challenge_str,  # Temporary storage (as base64 string)
-                "verification_code_expiry": (datetime.utcnow() + timedelta(minutes=5)).isoformat()  # Challenge expires in 5 min
-            }).eq("email", email).execute()
+            store_webauthn_challenge(email, challenge_str, expiry_minutes=5)
         
         # Convert to JSON-serializable format
         try:
-            # Try using model_dump for Pydantic v2
-            options_dict = registration_options.model_dump(mode='json')
+            # Try using model_dump_json for Pydantic v2 (handles bytes conversion automatically)
+            options_dict = json.loads(registration_options.model_dump_json())
         except AttributeError:
             try:
-                # Try using dict() for Pydantic v1
-                options_dict = registration_options.dict()
+                # Try using model_dump for Pydantic v2 with json mode
+                options_dict = registration_options.model_dump(mode='json')
             except AttributeError:
-                # Fallback to JSON string parsing
-                options_dict = json.loads(registration_options.json())
+                try:
+                    # Try using dict() for Pydantic v1
+                    options_dict = registration_options.dict()
+                except AttributeError:
+                    # Last resort: convert to dict manually using vars() or __dict__
+                    try:
+                        options_dict = vars(registration_options)
+                    except TypeError:
+                        # If it's not a simple object, try to convert recursively
+                        options_dict = registration_options.__dict__ if hasattr(registration_options, '__dict__') else {}
         
-        # Remove Ellipsis objects to make JSON serializable
+        # Remove Ellipsis objects and convert bytes to base64 strings (recursive)
+        # This ensures all bytes are converted even if model_dump didn't handle them
         options_dict = remove_ellipsis(options_dict)
+        
+        # Double-check: try to serialize to catch any remaining issues
+        try:
+            json.dumps(options_dict)  # Test serialization
+        except TypeError as e:
+            # If there are still non-serializable objects, run remove_ellipsis again more aggressively
+            options_dict = remove_ellipsis(options_dict)
+            # Try one more time
+            json.dumps(options_dict)
         
         response_data = {
             "success": True,
@@ -1667,7 +1795,7 @@ def passkey_register_complete():
     Request Body:
     {
         "email": "user@example.com",
-        "credential": {...},  // WebAuthn credential from browser
+        "credential": {...},  // WebAuthn credential from mobile app (iOS/Android)
         "device_name": "iPhone 15" (optional)
     }
     """
@@ -1689,7 +1817,7 @@ def passkey_register_complete():
         if not user:
             return jsonify({"success": False, "error": "User not found"}), 404
         
-        stored_challenge = user.get("verification_code")
+        stored_challenge = get_webauthn_challenge(email)
         if not stored_challenge:
             return jsonify({"success": False, "error": "Registration session expired. Please start again."}), 400
         
@@ -1728,11 +1856,8 @@ def passkey_register_complete():
                 device_name=device_name
             )
             
-            # Clear challenge
-            supabase.table("slay_users").update({
-                "verification_code": None,
-                "verification_code_expiry": None
-            }).eq("email", email).execute()
+            # Clear challenge (handles both verification_code and JSONB storage)
+            clear_webauthn_challenge(email)
             
             return jsonify({
                 "success": True,
@@ -1813,26 +1938,41 @@ def passkey_login_begin():
             user_verification=UserVerificationRequirement.PREFERRED,
         )
         
-        # Store challenge temporarily (for email-based lookups)
-        supabase.table("slay_users").update({
-            "verification_code": challenge_str,  # Store as base64 string
-            "verification_code_expiry": (datetime.utcnow() + timedelta(minutes=5)).isoformat()
-        }).eq("email", email).execute()
+        # Store challenge temporarily (handles both TEXT and VARCHAR(10) columns)
+        store_webauthn_challenge(email, challenge_str, expiry_minutes=5)
         
         # Convert to JSON-serializable format
         try:
-            # Try using model_dump for Pydantic v2
-            options_dict = authentication_options.model_dump(mode='json')
+            # Try using model_dump_json for Pydantic v2 (handles bytes conversion automatically)
+            options_dict = json.loads(authentication_options.model_dump_json())
         except AttributeError:
             try:
-                # Try using dict() for Pydantic v1
-                options_dict = authentication_options.dict()
+                # Try using model_dump for Pydantic v2 with json mode
+                options_dict = authentication_options.model_dump(mode='json')
             except AttributeError:
-                # Fallback to JSON string parsing
-                options_dict = json.loads(authentication_options.json())
+                try:
+                    # Try using dict() for Pydantic v1
+                    options_dict = authentication_options.dict()
+                except AttributeError:
+                    # Last resort: convert to dict manually using vars() or __dict__
+                    try:
+                        options_dict = vars(authentication_options)
+                    except TypeError:
+                        # If it's not a simple object, try to convert recursively
+                        options_dict = authentication_options.__dict__ if hasattr(authentication_options, '__dict__') else {}
         
-        # Remove Ellipsis objects to make JSON serializable
+        # Remove Ellipsis objects and convert bytes to base64 strings (recursive)
+        # This ensures all bytes are converted even if model_dump didn't handle them
         options_dict = remove_ellipsis(options_dict)
+        
+        # Double-check: try to serialize to catch any remaining issues
+        try:
+            json.dumps(options_dict)  # Test serialization
+        except TypeError as e:
+            # If there are still non-serializable objects, run remove_ellipsis again more aggressively
+            options_dict = remove_ellipsis(options_dict)
+            # Try one more time
+            json.dumps(options_dict)
         
         return jsonify({
             "success": True,
@@ -1933,11 +2073,8 @@ def passkey_login_complete():
             # Update sign count
             update_sign_count(email, credential_id_b64, verification.new_sign_count)
             
-            # Clear challenge
-            supabase.table("slay_users").update({
-                "verification_code": None,
-                "verification_code_expiry": None
-            }).eq("email", email).execute()
+            # Clear challenge (handles both verification_code and JSONB storage)
+            clear_webauthn_challenge(email)
             
             # Return user info
             user_data = {
@@ -1982,9 +2119,9 @@ def get_config():
 def api_docs():
     """Comprehensive API documentation endpoint"""
     docs_data = {
-        "title": "Email Verification API Documentation",
+        "title": "Mobile App Backend API Documentation",
         "version": "3.0.0 (Resend Edition)",
-        "description": "A RESTful API for email verification using Resend email service and Supabase database",
+        "description": "A RESTful API backend for mobile applications (iOS/Android) providing email verification, passwordless authentication (OTP + Passkeys), and user management using Resend email service and Supabase database",
         "base_url": request.host_url.rstrip('/'),
         "endpoints": {
             "GET /": {
@@ -1992,7 +2129,7 @@ def api_docs():
                 "method": "GET",
                 "path": "/",
                 "response": {
-                    "service": "Email Verification API",
+                    "service": "Mobile App Backend API",
                     "version": "3.0.0 (Resend Edition)",
                     "endpoints": "List of all available endpoints"
                 }
@@ -2008,7 +2145,7 @@ def api_docs():
                 "path": "/api/health",
                 "response_example": {
                     "status": "healthy",
-                    "service": "Email Verification API (Resend)",
+                    "service": "Mobile App Backend API - Email Verification (Resend)",
                     "version": "3.0.0 (Resend Edition)",
                     "timestamp": "2024-01-01T00:00:00.000000",
                     "configuration": {
@@ -2190,7 +2327,7 @@ def api_docs():
                 ]
             },
             "POST /api/passkey/register/begin": {
-                "description": "Begin passkey registration process. Generates WebAuthn registration options for the client.",
+                "description": "Begin passkey registration process. Generates WebAuthn registration options for mobile app (iOS/Android).",
                 "method": "POST",
                 "path": "/api/passkey/register/begin",
                 "request_body": {
@@ -2204,7 +2341,7 @@ def api_docs():
                 "response_success": {
                     "success": True,
                     "options": {
-                        "rp": {"id": "localhost", "name": "Slay Money"},
+                        "rp": {"id": "slay.money", "name": "Slay Money"},
                         "user": {"id": "...", "name": "user@example.com", "displayName": "John Doe"},
                         "challenge": "...",
                         "pubKeyCredParams": [...],
@@ -2226,17 +2363,17 @@ def api_docs():
                 "notes": [
                     "User must be registered and email verified",
                     "Challenge expires after 5 minutes",
-                    "Client should use the returned options with navigator.credentials.create()",
+                    "Mobile app should use the returned options with platform WebAuthn API (iOS: ASAuthorizationController, Android: Fido2ApiClient)",
                     "After creating credential, call /api/passkey/register/complete"
                 ]
             },
             "POST /api/passkey/register/complete": {
-                "description": "Complete passkey registration. Verifies and stores the passkey credential.",
+                "description": "Complete passkey registration. Verifies and stores the passkey credential from mobile app (iOS/Android).",
                 "method": "POST",
                 "path": "/api/passkey/register/complete",
                 "request_body": {
                     "email": "string (required) - User's email address",
-                    "credential": "object (required) - WebAuthn credential object from navigator.credentials.create()",
+                    "credential": "object (required) - WebAuthn credential object from mobile app WebAuthn API (iOS/Android)",
                     "device_name": "string (optional) - Name of the device/authenticator"
                 },
                 "request_example": {
@@ -2271,7 +2408,7 @@ def api_docs():
                 ]
             },
             "POST /api/passkey/login/begin": {
-                "description": "Begin passkey authentication process. Generates WebAuthn authentication options.",
+                "description": "Begin passkey authentication process. Generates WebAuthn authentication options for mobile app (iOS/Android).",
                 "method": "POST",
                 "path": "/api/passkey/login/begin",
                 "request_body": {
@@ -2283,7 +2420,7 @@ def api_docs():
                 "response_success": {
                     "success": True,
                     "options": {
-                        "rpId": "localhost",
+                        "rpId": "slay.money",
                         "challenge": "...",
                         "allowCredentials": [...],
                         "userVerification": "preferred",
@@ -2304,17 +2441,17 @@ def api_docs():
                     "If email is provided, only returns options for that user's credentials",
                     "If email is not provided, returns options for all credentials (discoverable login)",
                     "Challenge expires after 5 minutes",
-                    "Client should use the returned options with navigator.credentials.get()",
+                    "Mobile app should use the returned options with platform WebAuthn API (iOS: ASAuthorizationController, Android: Fido2ApiClient)",
                     "After authenticating, call /api/passkey/login/complete"
                 ]
             },
             "POST /api/passkey/login/complete": {
-                "description": "Complete passkey authentication. Verifies the passkey and logs the user in.",
+                "description": "Complete passkey authentication. Verifies the passkey from mobile app (iOS/Android) and logs the user in.",
                 "method": "POST",
                 "path": "/api/passkey/login/complete",
                 "request_body": {
                     "email": "string (required) - User's email address",
-                    "credential": "object (required) - WebAuthn credential object from navigator.credentials.get()"
+                    "credential": "object (required) - WebAuthn credential object from mobile app WebAuthn API (iOS/Android)"
                 },
                 "request_example": {
                     "email": "user@example.com",
@@ -2518,22 +2655,22 @@ def api_docs():
             "passkey_register_begin": {
                 "curl": "curl -X POST http://localhost:5000/api/passkey/register/begin -H 'Content-Type: application/json' -d '{\"email\":\"user@example.com\",\"device_name\":\"iPhone 15\"}'",
                 "python": "import requests\nresponse = requests.post('http://localhost:5000/api/passkey/register/begin', json={'email': 'user@example.com', 'device_name': 'iPhone 15'})",
-                "note": "Use the returned options with navigator.credentials.create() in the browser"
+                "note": "Use the returned options with mobile app WebAuthn API (iOS: ASAuthorizationController, Android: Fido2ApiClient)"
             },
             "passkey_register_complete": {
                 "curl": "curl -X POST http://localhost:5000/api/passkey/register/complete -H 'Content-Type: application/json' -d '{\"email\":\"user@example.com\",\"credential\":{...},\"device_name\":\"iPhone 15\"}'",
                 "python": "import requests\nresponse = requests.post('http://localhost:5000/api/passkey/register/complete', json={'email': 'user@example.com', 'credential': credential_object, 'device_name': 'iPhone 15'})",
-                "note": "Credential object comes from navigator.credentials.create() response"
+                "note": "Credential object comes from mobile app WebAuthn API response (iOS/Android)"
             },
             "passkey_login_begin": {
                 "curl": "curl -X POST http://localhost:5000/api/passkey/login/begin -H 'Content-Type: application/json' -d '{\"email\":\"user@example.com\"}'",
                 "python": "import requests\nresponse = requests.post('http://localhost:5000/api/passkey/login/begin', json={'email': 'user@example.com'})",
-                "note": "Use the returned options with navigator.credentials.get() in the browser"
+                "note": "Use the returned options with mobile app WebAuthn API (iOS: ASAuthorizationController, Android: Fido2ApiClient)"
             },
             "passkey_login_complete": {
                 "curl": "curl -X POST http://localhost:5000/api/passkey/login/complete -H 'Content-Type: application/json' -d '{\"email\":\"user@example.com\",\"credential\":{...}}'",
                 "python": "import requests\nresponse = requests.post('http://localhost:5000/api/passkey/login/complete', json={'email': 'user@example.com', 'credential': credential_object})",
-                "note": "Credential object comes from navigator.credentials.get() response"
+                "note": "Credential object comes from mobile app WebAuthn API response (iOS/Android)"
             }
         },
         "support": {
@@ -2917,7 +3054,7 @@ def api_docs_html():
                             '<div class="info-box warning">' +
                             '<h4>Error loading documentation</h4>' +
                             '<p>' + errorMsg + '</p>' +
-                            '<p>Please check the browser console for more details.</p>' +
+                            '<p>Please check the mobile app logs or API response for more details.</p>' +
                             '<p>Try visiting <a href="/docs" target="_blank">/docs</a> to verify the API is working.</p>' +
                             '</div>';
                     });
@@ -3100,9 +3237,9 @@ def api_docs_html():
     """
     
     return render_template_string(html_template, 
-                                 title="Email Verification API Documentation",
+                                 title="Mobile App Backend API Documentation",
                                  version="3.0.0 (Resend Edition)",
-                                 description="A RESTful API for email verification using Resend email service and Supabase database",
+                                 description="A RESTful API backend for mobile applications (iOS/Android) providing email verification, passwordless authentication (OTP + Passkeys), and user management using Resend email service and Supabase database",
                                  base_url=base_url,
                                  endpoints_json=endpoints_json)
 
@@ -3111,9 +3248,10 @@ def api_docs_html():
 def index():
     """API information endpoint"""
     return jsonify({
-        "service": "Email Verification API",
+        "service": "Mobile App Backend API - Email Verification & Authentication",
         "version": "3.0.0 (Resend Edition)",
         "email_provider": "Resend",
+        "client": "Mobile Applications (iOS/Android)",
         "endpoints": {
             "docs": "GET /docs - Comprehensive API documentation",
             "health": "GET /api/health",
@@ -3145,13 +3283,15 @@ if __name__ == '__main__':
     
     # Display configuration on startup
     print("\n" + "="*70)
-    print("🚀 EMAIL VERIFICATION API - RESEND EDITION")
+    print("🚀 MOBILE APP BACKEND API - RESEND EDITION")
     print("="*70)
     print(f"Email Provider: Resend (https://resend.com)")
     print(f"From Email: {FROM_EMAIL}")
     print(f"Resend API Key: {'✅ Configured' if RESEND_API_KEY else '❌ Not Set'}")
     print(f"Supabase URL: {SUPABASE_URL[:40] + '...' if len(SUPABASE_URL) > 40 else SUPABASE_URL}")
     print(f"Supabase Key: {'✅ Configured' if SUPABASE_KEY else '❌ Not Set'}")
+    print(f"RP ID (Relying Party): {RP_ID}")
+    print(f"Client: Mobile Apps (iOS/Android)")
     print("="*70)
     
     if not RESEND_API_KEY:
@@ -3164,7 +3304,7 @@ if __name__ == '__main__':
         print("Add them to your .env file\n")
     
     # Run the Flask app
-    port = int(os.getenv('PORT', 8000))
+    port = int(os.getenv('PORT', 5000))
     debug = os.getenv('FLASK_ENV', 'production') == 'development'
     
     print(f"\n✅ Server starting on http://localhost:{port}")
