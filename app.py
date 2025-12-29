@@ -2135,9 +2135,57 @@ def api_docs():
                 }
             },
             "GET /docs": {
-                "description": "This comprehensive API documentation",
+                "description": "This comprehensive API documentation in JSON format",
                 "method": "GET",
-                "path": "/docs"
+                "path": "/docs",
+                "response_example": {
+                    "title": "Mobile App Backend API Documentation",
+                    "version": "3.0.0 (Resend Edition)",
+                    "description": "A RESTful API backend for mobile applications...",
+                    "base_url": "http://localhost:5000",
+                    "endpoints": {}
+                }
+            },
+            "GET /docs/html": {
+                "description": "Interactive HTML documentation page with a user-friendly interface for browsing all API endpoints. This endpoint provides a beautiful, searchable, and interactive documentation interface that displays all API endpoints with their details, request/response examples, and status codes.",
+                "method": "GET",
+                "path": "/docs/html",
+                "response_example": "Returns an HTML page with interactive API documentation",
+                "usage": {
+                    "description": "Access the interactive HTML documentation by visiting this endpoint in a web browser",
+                    "steps": [
+                        "1. Open your web browser and navigate to: http://your-api-url/docs/html",
+                        "2. The page will automatically load all API endpoint documentation",
+                        "3. Use the search box at the top to filter endpoints by name, method, or path",
+                        "4. Click on any endpoint card to expand and view detailed information",
+                        "5. Copy request/response examples using the 'Copy' buttons",
+                        "6. View status codes, request bodies, and response examples for each endpoint"
+                    ],
+                    "features": [
+                        "Interactive endpoint cards that expand/collapse on click",
+                        "Search functionality to quickly find specific endpoints",
+                        "Copy-to-clipboard buttons for code examples",
+                        "Color-coded HTTP methods (GET, POST, PUT, DELETE)",
+                        "Status code badges with color indicators",
+                        "Grouped endpoints by category (Authentication, Passkey, User Management, etc.)",
+                        "Responsive design that works on desktop and mobile devices"
+                    ],
+                    "example_urls": [
+                        "http://localhost:5000/docs/html (local development)",
+                        "https://your-api-domain.com/docs/html (production)"
+                    ]
+                },
+                "status_codes": {
+                    "200": "HTML documentation page successfully returned",
+                    "500": "Internal server error (if /docs endpoint fails)"
+                },
+                "notes": [
+                    "This endpoint fetches data from the /docs endpoint internally",
+                    "The HTML page is fully self-contained with embedded JavaScript",
+                    "No authentication required - publicly accessible",
+                    "Works best in modern web browsers (Chrome, Firefox, Safari, Edge)",
+                    "For programmatic access, use /docs endpoint instead which returns JSON"
+                ]
             },
             "GET /api/health": {
                 "description": "Health check endpoint to verify API status and configuration",
@@ -3008,8 +3056,21 @@ def api_docs_html():
         </div>
         
         <div class="content">
+            <div class="info-box success" style="margin-bottom: 30px;">
+                <h4 style="margin-top: 0; color: #2e7d32;">📚 How to Use This Documentation</h4>
+                <p><strong>Welcome to the Interactive API Documentation!</strong> This page provides a comprehensive, searchable interface for exploring all available API endpoints.</p>
+                <ul style="margin: 10px 0; padding-left: 20px;">
+                    <li><strong>Search Endpoints:</strong> Use the search box above to filter endpoints by name, method (GET, POST, etc.), or path</li>
+                    <li><strong>View Details:</strong> Click on any endpoint card to expand and see detailed information including request/response examples</li>
+                    <li><strong>Copy Examples:</strong> Click the "Copy" button on any code block to copy request/response examples to your clipboard</li>
+                    <li><strong>Browse by Category:</strong> Endpoints are automatically grouped by category (Authentication, Passkey, User Management, etc.)</li>
+                    <li><strong>Status Codes:</strong> Each endpoint shows color-coded HTTP status codes with descriptions</li>
+                </ul>
+                <p style="margin-bottom: 0;"><strong>💡 Tip:</strong> For programmatic access to this documentation, use the <code>/docs</code> endpoint which returns JSON format.</p>
+            </div>
+            
             <div class="search-box">
-                <input type="text" id="searchInput" placeholder="Search endpoints...">
+                <input type="text" id="searchInput" placeholder="Search endpoints by name, method, or path...">
             </div>
             
             <div id="endpointsContainer">
@@ -3019,7 +3080,8 @@ def api_docs_html():
         
         <div class="footer">
             <p>Base URL: <code>{{ base_url }}</code></p>
-            <p>For JSON documentation, visit <a href="/docs">/docs</a></p>
+            <p>For JSON documentation, visit <a href="/docs">/docs</a> | You are currently viewing the <a href="/docs/html">HTML documentation</a></p>
+            <p style="margin-top: 10px; font-size: 0.9em; color: #999;">This interactive documentation is automatically generated from the API endpoints. All examples are based on the current API structure.</p>
         </div>
     </div>
     
@@ -3253,7 +3315,8 @@ def index():
         "email_provider": "Resend",
         "client": "Mobile Applications (iOS/Android)",
         "endpoints": {
-            "docs": "GET /docs - Comprehensive API documentation",
+            "docs": "GET /docs - Comprehensive API documentation (JSON)",
+            "docs_html": "GET /docs/html - Interactive HTML API documentation",
             "health": "GET /api/health",
             "config": "GET /api/config",
             "register": "POST /api/register",
@@ -3269,7 +3332,7 @@ def index():
             "verify_invite": "POST /api/verify-invite-code",
             "user_status": "GET /api/user/<email>"
         },
-        "documentation": "GET /docs for full API documentation or see RESEND_SETUP.md for setup instructions"
+        "documentation": "GET /docs for JSON documentation, GET /docs/html for interactive HTML documentation, or see RESEND_SETUP.md for setup instructions"
     }), 200
 
 if __name__ == '__main__':
@@ -3308,7 +3371,8 @@ if __name__ == '__main__':
     debug = os.getenv('FLASK_ENV', 'production') == 'development'
     
     print(f"\n✅ Server starting on http://localhost:{port}")
-    print(f"📚 API Documentation: http://localhost:{port}/docs")
+    print(f"📚 API Documentation (JSON): http://localhost:{port}/docs")
+    print(f"🌐 API Documentation (HTML): http://localhost:{port}/docs/html")
     print(f"📖 API Info: http://localhost:{port}/")
     print(f"❤️  Health Check: http://localhost:{port}/api/health")
     print("="*70 + "\n")
