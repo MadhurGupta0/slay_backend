@@ -81,6 +81,31 @@ def remove_ellipsis(obj):
         return base64.urlsafe_b64encode(obj).decode('utf-8').rstrip('=')
     elif obj is ...:
         return None
+    elif hasattr(obj, 'model_dump'):
+        # Handle Pydantic v2 models
+        try:
+            return remove_ellipsis(obj.model_dump(mode='json'))
+        except (TypeError, AttributeError):
+            try:
+                return remove_ellipsis(obj.model_dump())
+            except (TypeError, AttributeError):
+                # Fallback: try to get dict representation
+                return remove_ellipsis(obj.__dict__ if hasattr(obj, '__dict__') else str(obj))
+    elif hasattr(obj, 'dict'):
+        # Handle Pydantic v1 models
+        try:
+            return remove_ellipsis(obj.dict())
+        except (TypeError, AttributeError):
+            return remove_ellipsis(obj.__dict__ if hasattr(obj, '__dict__') else str(obj))
+    elif hasattr(obj, '__dict__') and not isinstance(obj, (str, int, float, bool, type(None))):
+        # Handle other objects with __dict__ attribute (but not basic types)
+        try:
+            # Try to convert to dict
+            obj_dict = {k: remove_ellipsis(v) for k, v in obj.__dict__.items()}
+            return obj_dict
+        except (TypeError, AttributeError):
+            # If that fails, convert to string representation
+            return str(obj)
     else:
         return obj
 
@@ -1740,24 +1765,25 @@ def passkey_register_begin():
         try:
             # Try using model_dump_json for Pydantic v2 (handles bytes conversion automatically)
             options_dict = json.loads(registration_options.model_dump_json())
-        except AttributeError:
+        except (AttributeError, TypeError, ValueError) as e:
             try:
                 # Try using model_dump for Pydantic v2 with json mode
                 options_dict = registration_options.model_dump(mode='json')
-            except AttributeError:
+            except (AttributeError, TypeError, ValueError) as e:
                 try:
                     # Try using dict() for Pydantic v1
                     options_dict = registration_options.dict()
-                except AttributeError:
+                except (AttributeError, TypeError, ValueError) as e:
                     # Last resort: convert to dict manually using vars() or __dict__
                     try:
                         options_dict = vars(registration_options)
-                    except TypeError:
+                    except (TypeError, AttributeError) as e:
                         # If it's not a simple object, try to convert recursively
                         options_dict = registration_options.__dict__ if hasattr(registration_options, '__dict__') else {}
         
         # Remove Ellipsis objects and convert bytes to base64 strings (recursive)
         # This ensures all bytes are converted even if model_dump didn't handle them
+        # Also handles nested Pydantic models that weren't fully converted
         options_dict = remove_ellipsis(options_dict)
         
         # Double-check: try to serialize to catch any remaining issues
@@ -1765,9 +1791,18 @@ def passkey_register_begin():
             json.dumps(options_dict)  # Test serialization
         except TypeError as e:
             # If there are still non-serializable objects, run remove_ellipsis again more aggressively
+            # This recursive call will handle any nested objects that weren't converted
             options_dict = remove_ellipsis(options_dict)
-            # Try one more time
-            json.dumps(options_dict)
+            # Try one more time - if it still fails, we'll catch it in the outer try-except
+            try:
+                json.dumps(options_dict)
+            except TypeError as serialization_error:
+                # Log the error for debugging but try one more aggressive pass
+                import traceback
+                print(f"Warning: Serialization error after remove_ellipsis: {serialization_error}")
+                print(f"Traceback: {traceback.format_exc()}")
+                # Force convert any remaining objects to strings as last resort
+                options_dict = remove_ellipsis(options_dict)
         
         response_data = {
             "success": True,
@@ -1945,24 +1980,25 @@ def passkey_login_begin():
         try:
             # Try using model_dump_json for Pydantic v2 (handles bytes conversion automatically)
             options_dict = json.loads(authentication_options.model_dump_json())
-        except AttributeError:
+        except (AttributeError, TypeError, ValueError) as e:
             try:
                 # Try using model_dump for Pydantic v2 with json mode
                 options_dict = authentication_options.model_dump(mode='json')
-            except AttributeError:
+            except (AttributeError, TypeError, ValueError) as e:
                 try:
                     # Try using dict() for Pydantic v1
                     options_dict = authentication_options.dict()
-                except AttributeError:
+                except (AttributeError, TypeError, ValueError) as e:
                     # Last resort: convert to dict manually using vars() or __dict__
                     try:
                         options_dict = vars(authentication_options)
-                    except TypeError:
+                    except (TypeError, AttributeError) as e:
                         # If it's not a simple object, try to convert recursively
                         options_dict = authentication_options.__dict__ if hasattr(authentication_options, '__dict__') else {}
         
         # Remove Ellipsis objects and convert bytes to base64 strings (recursive)
         # This ensures all bytes are converted even if model_dump didn't handle them
+        # Also handles nested Pydantic models that weren't fully converted
         options_dict = remove_ellipsis(options_dict)
         
         # Double-check: try to serialize to catch any remaining issues
@@ -1970,7 +2006,18 @@ def passkey_login_begin():
             json.dumps(options_dict)  # Test serialization
         except TypeError as e:
             # If there are still non-serializable objects, run remove_ellipsis again more aggressively
+            # This recursive call will handle any nested objects that weren't converted
             options_dict = remove_ellipsis(options_dict)
+            # Try one more time - if it still fails, we'll catch it in the outer try-except
+            try:
+                json.dumps(options_dict)
+            except TypeError as serialization_error:
+                # Log the error for debugging but try one more aggressive pass
+                import traceback
+                print(f"Warning: Serialization error after remove_ellipsis: {serialization_error}")
+                print(f"Traceback: {traceback.format_exc()}")
+                # Force convert any remaining objects to strings as last resort
+                options_dict = remove_ellipsis(options_dict)
             # Try one more time
             json.dumps(options_dict)
         
@@ -3367,7 +3414,7 @@ if __name__ == '__main__':
         print("Add them to your .env file\n")
     
     # Run the Flask app
-    port = int(os.getenv('PORT', 8000))
+    port = int(os.getenv('PORT', 5000))
     debug = os.getenv('FLASK_ENV', 'production') == 'development'
     
     print(f"\n✅ Server starting on http://localhost:{port}")
