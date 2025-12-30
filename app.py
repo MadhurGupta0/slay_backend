@@ -1114,7 +1114,7 @@ def register_user():
                 # Clean credential to remove Ellipsis objects before JSON serialization
                 cleaned_credential = remove_ellipsis(credential)
                 verification = verify_registration_response(
-                    credential=RegistrationCredential.parse_raw(json.dumps(cleaned_credential)),
+                    credential=RegistrationCredential.model_validate_json(json.dumps(cleaned_credential)),
                     expected_challenge=challenge_bytes,
                     expected_origin=ORIGIN,
                     expected_rp_id=RP_ID,
@@ -1999,7 +1999,7 @@ def passkey_register_complete():
             # Clean credential to remove Ellipsis objects before JSON serialization
             cleaned_credential = remove_ellipsis(credential)
             verification = verify_registration_response(
-                credential=RegistrationCredential.parse_raw(json.dumps(cleaned_credential)),
+                credential=RegistrationCredential.model_validate_json(json.dumps(cleaned_credential)),
                 expected_challenge=challenge_bytes,
                 expected_origin=ORIGIN,
                 expected_rp_id=RP_ID,
@@ -4787,7 +4787,7 @@ if __name__ == '__main__':
         print("Add them to your .env file\n")
     
     # Run the Flask app
-    port = int(os.getenv('PORT', 5000))
+    port = int(os.getenv('PORT', 8000))
     debug = os.getenv('FLASK_ENV', 'production') == 'development'
     
     print(f"\n✅ Server starting on http://localhost:{port}")
