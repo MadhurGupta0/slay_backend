@@ -1933,11 +1933,15 @@ def passkey_register_begin():
             "error": f"Failed to begin passkey registration: {str(e)}"
         }), 500
 
-def decode_webauthn_challenge(challenge: str) -> bytes:
+def decode_webauthn_challenge(challenge: str, expected_length: int = 32) -> bytes:
     """
     Decode WebAuthn challenge.
     - Android: decimal string (may have trailing non-digit characters like 'w')
     - Browsers/iOS: base64url
+    
+    Args:
+        challenge: The challenge string to decode
+        expected_length: Expected byte length (default 32 for WebAuthn challenges)
     """
     # Android decimal string - extract numeric part (handles trailing characters like 'w')
     # Check if the string starts with digits (Android format)
@@ -1946,15 +1950,21 @@ def decode_webauthn_challenge(challenge: str) -> bytes:
         numeric_part = ''.join(c for c in challenge if c.isdigit())
         if numeric_part:
             value = int(numeric_part)
-            # WebAuthn challenges are typically 32 bytes, but calculate length from value
-            # Use bit_length() to determine minimum bytes needed
+            # Calculate minimum bytes needed to represent this value
             calculated_length = (value.bit_length() + 7) // 8
-            # Ensure minimum 32 bytes for WebAuthn challenges (pad with leading zeros if needed)
-            # However, if calculated_length is less, it means the original had leading zeros
-            # We'll use calculated_length as-is since to_bytes will pad correctly
-            return value.to_bytes(calculated_length, "big")
+            # WebAuthn challenges are always exactly expected_length bytes
+            # If calculated_length is less, it means the original had leading zeros
+            # Pad with leading zeros to ensure exact expected_length
+            decoded_bytes = value.to_bytes(calculated_length, "big")
+            if len(decoded_bytes) < expected_length:
+                # Pad with leading zeros
+                decoded_bytes = b'\x00' * (expected_length - len(decoded_bytes)) + decoded_bytes
+            elif len(decoded_bytes) > expected_length:
+                # This shouldn't happen for WebAuthn challenges, but handle it
+                decoded_bytes = decoded_bytes[-expected_length:]
+            return decoded_bytes
 
-    # Base64url (browser / iOS)
+    # Base64url (browser / iOS) - no padding/truncation needed, base64url decodes to exact bytes
     return base64.urlsafe_b64decode(challenge + "==")
 
 @app.route('/api/passkey/register/complete', methods=['POST'])
@@ -2021,6 +2031,8 @@ def passkey_register_complete():
         try:
             # Convert stored challenge string back to bytes
             challenge_bytes = base64.urlsafe_b64decode(stored_challenge+'==')
+            expected_length = len(challenge_bytes)  # Use actual length of expected challenge
+            
             # Clean credential to remove Ellipsis objects before JSON serialization
             cleaned_credential = remove_ellipsis(credential)
             # --------------------------------------------------
@@ -2035,15 +2047,28 @@ def passkey_register_complete():
 
             # --------------------------------------------------
             # 4. Decode challenge from clientDataJSON
-            #    (ANDROID SAFE)
+            #    (ANDROID SAFE) - use expected_length to ensure correct byte length
             # --------------------------------------------------
             received_challenge_bytes = decode_webauthn_challenge(
-                client_data["challenge"]
+                client_data["challenge"],
+                expected_length=expected_length
             )
+            
+            # Verify the decoded challenge matches expected challenge
+            if received_challenge_bytes != challenge_bytes:
+                print(f"ERROR: Decoded challenge does not match expected challenge!")
+                print(f"  Expected (len={len(challenge_bytes)}): {base64.urlsafe_b64encode(challenge_bytes).decode('utf-8')}")
+                print(f"  Received (len={len(received_challenge_bytes)}): {base64.urlsafe_b64encode(received_challenge_bytes).decode('utf-8')}")
+                print(f"  Original challenge string from clientDataJSON: {client_data['challenge']}")
+                return jsonify({
+                    "success": False,
+                    "error": "Challenge verification failed: decoded challenge does not match expected challenge"
+                }), 400
 
             # --------------------------------------------------
             # 5. Overwrite challenge with BASE64URL-ENCODED STRING
             #    (python-webauthn expects base64url-encoded challenge in clientDataJSON)
+            #    Use received_challenge_bytes (which should equal challenge_bytes after verification)
             # --------------------------------------------------
             client_data["challenge"] = base64.urlsafe_b64encode(received_challenge_bytes).decode('utf-8').rstrip('=')
 
@@ -4857,4 +4882,3 @@ if __name__ == '__main__':
     print("="*70 + "\n")
     
     app.run(host='0.0.0.0', port=port, debug=debug)
-
