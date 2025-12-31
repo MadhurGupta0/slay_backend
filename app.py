@@ -2293,7 +2293,9 @@ def passkey_login_complete():
         
         # Get stored challenge
         stored_challenge = user.get("verification_code")
+        print(f"DEBUG: Retrieved stored_challenge = {stored_challenge}", flush=True)
         if not stored_challenge:
+            print("DEBUG: stored_challenge is None or empty, returning early", flush=True)
             return jsonify({"success": False, "error": "Login session expired. Please start again."}), 400
         
         # Check challenge expiry
@@ -2307,16 +2309,28 @@ def passkey_login_complete():
                 pass
         
         # Get public key from stored credential
-        public_key_bytes = base64.b64decode(matching_cred["public_key"])
+        print(f"DEBUG: About to decode public key. stored_challenge = {stored_challenge}", flush=True)
+        try:
+            public_key_bytes = base64.b64decode(matching_cred["public_key"])
+            print(f"DEBUG: Successfully decoded public key", flush=True)
+        except Exception as e:
+            print(f"DEBUG: Error decoding public key: {e}", flush=True)
+            raise
         expected_sign_count = matching_cred.get("sign_count", 0)
         
         # Verify authentication response
         try:
             # Convert stored challenge string back to bytes
-            print(stored_challenge)
+            print(f"DEBUG: Inside verification try block. stored_challenge = {stored_challenge}", flush=True)
+            print(f"DEBUG: About to decode challenge. Type: {type(stored_challenge)}, Value: {repr(stored_challenge)}", flush=True)
 
-            challenge_bytes = base64.urlsafe_b64decode(stored_challenge + '==')
-            print(challenge_bytes)
+            try:
+                challenge_bytes = base64.urlsafe_b64decode(stored_challenge + '==')
+                print(f"DEBUG: Successfully decoded challenge_bytes. Length: {len(challenge_bytes)}, Value: {challenge_bytes}", flush=True)
+            except Exception as decode_error:
+                print(f"DEBUG: Error decoding challenge_bytes: {decode_error}", flush=True)
+                print(f"DEBUG: stored_challenge repr: {repr(stored_challenge)}", flush=True)
+                raise
             # Clean credential to remove Ellipsis objects before JSON serialization
             cleaned_credential = remove_ellipsis(credential)
             verification = verify_authentication_response(
