@@ -2028,15 +2028,15 @@ def passkey_register_complete():
             # 4. Decode challenge from clientDataJSON
             #    (ANDROID SAFE)
             # --------------------------------------------------
-            received_challenge = decode_webauthn_challenge(
+            received_challenge_bytes = decode_webauthn_challenge(
                 client_data["challenge"]
             )
 
             # --------------------------------------------------
-            # 5. Overwrite challenge with RAW BYTES
-            #    (what python-webauthn expects)
+            # 5. Overwrite challenge with BASE64URL-ENCODED STRING
+            #    (python-webauthn expects base64url-encoded challenge in clientDataJSON)
             # --------------------------------------------------
-            client_data["challenge"] = received_challenge
+            client_data["challenge"] = base64.urlsafe_b64encode(received_challenge_bytes).decode('utf-8').rstrip('=')
 
             # --------------------------------------------------
             # 6. Re-encode clientDataJSON
