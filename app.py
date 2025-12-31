@@ -2018,7 +2018,7 @@ def passkey_register_complete():
             # 3. Decode clientDataJSON
             # --------------------------------------------------
             client_data_json_bytes = base64.urlsafe_b64decode(
-                cleaned_credential["response"]["clientDataJSON"]["challenge"] + "=="
+                cleaned_credential["response"]["clientDataJSON"] + "=="
             )
             client_data = json.loads(
                 client_data_json_bytes.decode("utf-8")
@@ -4837,7 +4837,7 @@ if __name__ == '__main__':
         print("Add them to your .env file\n")
     
     # Run the Flask app
-    port = int(os.getenv('PORT', 8000))
+    port = int(os.getenv('PORT', 5000))
     debug = os.getenv('FLASK_ENV', 'production') == 'development'
     
     print(f"\n✅ Server starting on http://localhost:{port}")
