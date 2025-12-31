@@ -2181,7 +2181,7 @@ def passkey_login_begin():
             allow_credentials=allowed_credentials if allowed_credentials else None,
             user_verification=UserVerificationRequirement.PREFERRED,
         )
-        
+        print(challenge_bytes)
         # Store challenge temporarily (handles both TEXT and VARCHAR(10) columns)
         store_webauthn_challenge(email, challenge_str, expiry_minutes=5)
         
@@ -2229,7 +2229,7 @@ def passkey_login_begin():
                 options_dict = remove_ellipsis(options_dict)
             # Try one more time
             json.dumps(options_dict)
-        
+        print(options_dict)
         return jsonify({
             "success": True,
             "options": options_dict
@@ -2313,8 +2313,10 @@ def passkey_login_complete():
         # Verify authentication response
         try:
             # Convert stored challenge string back to bytes
+            print(stored_challenge)
+
             challenge_bytes = base64.urlsafe_b64decode(stored_challenge + '==')
-            
+            print(challenge_bytes)
             # Clean credential to remove Ellipsis objects before JSON serialization
             cleaned_credential = remove_ellipsis(credential)
             verification = verify_authentication_response(
