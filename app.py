@@ -2018,7 +2018,7 @@ def passkey_register_complete():
             # 3. Decode clientDataJSON
             # --------------------------------------------------
             client_data_json_bytes = base64.urlsafe_b64decode(
-                cleaned_credential["response"]["clientDataJSON"] + "=="
+                cleaned_credential["response"]["clientDataJSON"]["challenge"] + "=="
             )
             client_data = json.loads(
                 client_data_json_bytes.decode("utf-8")
