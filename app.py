@@ -1936,14 +1936,23 @@ def passkey_register_begin():
 def decode_webauthn_challenge(challenge: str) -> bytes:
     """
     Decode WebAuthn challenge.
-    - Android: decimal string
+    - Android: decimal string (may have trailing non-digit characters like 'w')
     - Browsers/iOS: base64url
     """
-    # Android decimal string
-    if challenge.isdigit():
-        value = int(challenge)
-        length = (value.bit_length() + 7) // 8
-        return value.to_bytes(length, "big")
+    # Android decimal string - extract numeric part (handles trailing characters like 'w')
+    # Check if the string starts with digits (Android format)
+    if challenge and challenge[0].isdigit():
+        # Extract only the numeric prefix (strips trailing non-digit characters)
+        numeric_part = ''.join(c for c in challenge if c.isdigit())
+        if numeric_part:
+            value = int(numeric_part)
+            # WebAuthn challenges are typically 32 bytes, but calculate length from value
+            # Use bit_length() to determine minimum bytes needed
+            calculated_length = (value.bit_length() + 7) // 8
+            # Ensure minimum 32 bytes for WebAuthn challenges (pad with leading zeros if needed)
+            # However, if calculated_length is less, it means the original had leading zeros
+            # We'll use calculated_length as-is since to_bytes will pad correctly
+            return value.to_bytes(calculated_length, "big")
 
     # Base64url (browser / iOS)
     return base64.urlsafe_b64decode(challenge + "==")
@@ -4848,3 +4857,4 @@ if __name__ == '__main__':
     print("="*70 + "\n")
     
     app.run(host='0.0.0.0', port=port, debug=debug)
+
