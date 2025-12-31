@@ -1933,6 +1933,21 @@ def passkey_register_begin():
             "error": f"Failed to begin passkey registration: {str(e)}"
         }), 500
 
+def decode_webauthn_challenge(challenge: str) -> bytes:
+    """
+    Decode WebAuthn challenge.
+    - Android: decimal string
+    - Browsers/iOS: base64url
+    """
+    # Android decimal string
+    if challenge.isdigit():
+        value = int(challenge)
+        length = (value.bit_length() + 7) // 8
+        return value.to_bytes(length, "big")
+
+    # Base64url (browser / iOS)
+    return base64.urlsafe_b64decode(challenge + "==")
+
 @app.route('/api/passkey/register/complete', methods=['POST'])
 def passkey_register_complete():
     """
@@ -1996,12 +2011,44 @@ def passkey_register_complete():
         # Verify registration response
         try:
             # Convert stored challenge string back to bytes
-            challenge_bytes = base64.urlsafe_b64decode(stored_challenge + '==')
-            credential["challenge"] = base64.urlsafe_b64decode(credential["challenge"] + '==')
+            challenge_bytes = base64.urlsafe_b64decode(stored_challenge+'==')
+            cleaned_credential.response.clientDataJSON.challenge = base64.urlsafe_b64decode(cleaned_credential.response.clientDataJSON.challenge)
             # Clean credential to remove Ellipsis objects before JSON serialization
             cleaned_credential = remove_ellipsis(credential)
-            print(cleaned_credential)
-            print(challenge_bytes)
+            # --------------------------------------------------
+            # 3. Decode clientDataJSON
+            # --------------------------------------------------
+            client_data_json_bytes = base64.urlsafe_b64decode(
+                cleaned_credential["response"]["clientDataJSON"] + "=="
+            )
+            client_data = json.loads(
+                client_data_json_bytes.decode("utf-8")
+            )
+
+            # --------------------------------------------------
+            # 4. Decode challenge from clientDataJSON
+            #    (ANDROID SAFE)
+            # --------------------------------------------------
+            received_challenge = decode_webauthn_challenge(
+                client_data["challenge"]
+            )
+
+            # --------------------------------------------------
+            # 5. Overwrite challenge with RAW BYTES
+            #    (what python-webauthn expects)
+            # --------------------------------------------------
+            client_data["challenge"] = received_challenge
+
+            # --------------------------------------------------
+            # 6. Re-encode clientDataJSON
+            # --------------------------------------------------
+            cleaned_credential["response"]["clientDataJSON"] = (
+                base64.urlsafe_b64encode(
+                    json.dumps(client_data).encode("utf-8")
+                )
+                .decode("utf-8")
+                .rstrip("=")
+            )
             verification = verify_registration_response(
                 credential=parse_registration_credential_json(json.dumps(cleaned_credential)),
                 expected_challenge=challenge_bytes,
@@ -4791,7 +4838,7 @@ if __name__ == '__main__':
         print("Add them to your .env file\n")
     
     # Run the Flask app
-    port = int(os.getenv('PORT', 5000))
+    port = int(os.getenv('PORT', 8000))
     debug = os.getenv('FLASK_ENV', 'production') == 'development'
     
     print(f"\n✅ Server starting on http://localhost:{port}")
