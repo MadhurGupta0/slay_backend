@@ -2012,7 +2012,6 @@ def passkey_register_complete():
         try:
             # Convert stored challenge string back to bytes
             challenge_bytes = base64.urlsafe_b64decode(stored_challenge+'==')
-            cleaned_credential.response.clientDataJSON.challenge = base64.urlsafe_b64decode(cleaned_credential.response.clientDataJSON.challenge)
             # Clean credential to remove Ellipsis objects before JSON serialization
             cleaned_credential = remove_ellipsis(credential)
             # --------------------------------------------------
