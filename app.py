@@ -22,6 +22,7 @@ import base64
 import json
 import secrets
 import logging
+import bcrypt
 from webauthn import (
     generate_registration_options,
     verify_registration_response,
@@ -80,6 +81,36 @@ EXPECTED_ORIGINS = [
 def generate_verification_code(length: int = 6) -> str:
     """Generate a random numeric verification code"""
     return ''.join(random.choices(string.digits, k=length))
+
+def validate_pin(pin: str) -> tuple[bool, str]:
+    """Validate PIN format (4-6 digits)"""
+    if not pin:
+        return False, "PIN is required"
+    if not pin.isdigit():
+        return False, "PIN must contain only digits"
+    if len(pin) < 4 or len(pin) > 6:
+        return False, "PIN must be between 4 and 6 digits"
+    return True, "Valid"
+
+def hash_pin(pin: str) -> str:
+    """Hash a PIN using bcrypt"""
+    # Convert PIN string to bytes
+    pin_bytes = pin.encode('utf-8')
+    # Generate salt and hash
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(pin_bytes, salt)
+    # Return as string for database storage
+    return hashed.decode('utf-8')
+
+def verify_pin(pin: str, hashed_pin: str) -> bool:
+    """Verify a PIN against its hash"""
+    try:
+        pin_bytes = pin.encode('utf-8')
+        hashed_bytes = hashed_pin.encode('utf-8')
+        return bcrypt.checkpw(pin_bytes, hashed_bytes)
+    except Exception as e:
+        logger.error(f"Error verifying PIN: {str(e)}")
+        return False
 
 def remove_ellipsis(obj):
     """Recursively remove Ellipsis objects and convert non-JSON-serializable types to JSON-serializable formats"""
@@ -1866,6 +1897,168 @@ def verify_login_otp():
             "error": f"Login verification failed: {str(e)}"
         }), 500
 
+@app.route('/api/pin/register', methods=['POST'])
+def register_pin():
+    """
+    Register or update PIN for a user
+    PIN is stored in encrypted (hashed) format using bcrypt
+    
+    Request Body:
+    {
+        "email": "user@example.com",  // Required
+        "pin": "1234"  // Required - 4-6 digits
+    }
+    
+    Requirements:
+    - User must exist and be email verified
+    - PIN must be 4-6 digits
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"success": False, "error": "No data provided"}), 400
+        
+        email = data.get('email')
+        pin = data.get('pin')
+        
+        # Validate required fields
+        if not email:
+            return jsonify({"success": False, "error": "Email is required"}), 400
+        
+        if not pin:
+            return jsonify({"success": False, "error": "PIN is required"}), 400
+        
+        # Validate email format
+        if not validate_email(email):
+            return jsonify({"success": False, "error": "Invalid email format"}), 400
+        
+        # Validate PIN format
+        pin_valid, pin_error = validate_pin(pin)
+        if not pin_valid:
+            return jsonify({"success": False, "error": pin_error}), 400
+        
+        # Get user
+        user = get_user_by_email(email)
+        if not user:
+            return jsonify({"success": False, "error": "User not found"}), 404
+        
+        # Check if user is verified
+        if not user.get("email_verified"):
+            return jsonify({
+                "success": False,
+                "error": "Email not verified. Please verify your email first."
+            }), 400
+        
+        # Hash the PIN
+        hashed_pin = hash_pin(pin)
+        
+        # Update user with hashed PIN
+        try:
+            supabase.table("slay_users").update({
+                "pin_hash": hashed_pin,
+                "pin_created_at": datetime.utcnow().isoformat()
+            }).eq("email", email).execute()
+            
+            logger.info(f"PIN registered successfully for user: {email}")
+            
+            return jsonify({
+                "success": True,
+                "message": "PIN registered successfully"
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"Error storing PIN: {str(e)}")
+            return jsonify({
+                "success": False,
+                "error": f"Failed to store PIN: {str(e)}"
+            }), 500
+        
+    except Exception as e:
+        logger.error(f"Error in register_pin: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": f"PIN registration failed: {str(e)}"
+        }), 500
+
+@app.route('/api/pin/verify', methods=['POST'])
+def verify_pin_endpoint():
+    """
+    Verify a PIN for a user
+    
+    Request Body:
+    {
+        "email": "user@example.com",  // Required
+        "pin": "1234"  // Required
+    }
+    
+    Returns:
+    - Success if PIN matches
+    - Error if PIN is incorrect or user doesn't have a PIN set
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"success": False, "error": "No data provided"}), 400
+        
+        email = data.get('email')
+        pin = data.get('pin')
+        
+        # Validate required fields
+        if not email:
+            return jsonify({"success": False, "error": "Email is required"}), 400
+        
+        if not pin:
+            return jsonify({"success": False, "error": "PIN is required"}), 400
+        
+        # Validate email format
+        if not validate_email(email):
+            return jsonify({"success": False, "error": "Invalid email format"}), 400
+        
+        # Get user
+        user = get_user_by_email(email)
+        if not user:
+            return jsonify({"success": False, "error": "User not found"}), 404
+        
+        # Check if user has a PIN set
+        hashed_pin = user.get("pin_hash")
+        if not hashed_pin:
+            return jsonify({
+                "success": False,
+                "error": "PIN not set. Please register a PIN first."
+            }), 400
+        
+        # Verify PIN
+        if verify_pin(pin, hashed_pin):
+            logger.info(f"PIN verified successfully for user: {email}")
+            
+            # Update last PIN verification time
+            try:
+                supabase.table("slay_users").update({
+                    "pin_last_verified_at": datetime.utcnow().isoformat()
+                }).eq("email", email).execute()
+            except Exception as e:
+                logger.warning(f"Could not update PIN verification timestamp: {str(e)}")
+            
+            return jsonify({
+                "success": True,
+                "message": "PIN verified successfully"
+            }), 200
+        else:
+            logger.warning(f"PIN verification failed for user: {email}")
+            return jsonify({
+                "success": False,
+                "error": "Invalid PIN"
+            }), 401
+        
+    except Exception as e:
+        logger.error(f"Error in verify_pin: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": f"PIN verification failed: {str(e)}"
+        }), 500
+
 @app.route('/api/passkey/register/begin', methods=['POST'])
 def passkey_register_begin():
     """
@@ -2711,6 +2904,72 @@ def api_docs():
                     "OTP expires after 15 minutes",
                     "OTP is cleared after successful login",
                     "Returns user information on successful login"
+                ]
+            },
+            "POST /api/pin/register": {
+                "description": "Register or update a numeric PIN for a user. PIN is stored in encrypted (hashed) format using bcrypt.",
+                "method": "POST",
+                "path": "/api/pin/register",
+                "request_body": {
+                    "email": "string (required) - User's email address",
+                    "pin": "string (required) - 4-6 digit PIN"
+                },
+                "request_example": {
+                    "email": "user@example.com",
+                    "pin": "1234"
+                },
+                "response_success": {
+                    "success": True,
+                    "message": "PIN registered successfully"
+                },
+                "response_error": {
+                    "success": False,
+                    "error": "Error message (invalid email, invalid PIN format, user not found, email not verified, etc.)"
+                },
+                "status_codes": {
+                    "200": "PIN registered/updated successfully",
+                    "400": "Bad request (invalid email format, invalid PIN, email not verified, etc.)",
+                    "404": "User not found",
+                    "500": "Internal server error"
+                },
+                "notes": [
+                    "User must already exist and have a verified email",
+                    "PIN must be 4-6 digits and contain only numbers",
+                    "PIN is hashed using bcrypt with a salt before being stored in the database",
+                    "Existing PIN will be overwritten if this endpoint is called again"
+                ]
+            },
+            "POST /api/pin/verify": {
+                "description": "Verify a user's PIN against the securely stored hash.",
+                "method": "POST",
+                "path": "/api/pin/verify",
+                "request_body": {
+                    "email": "string (required) - User's email address",
+                    "pin": "string (required) - 4-6 digit PIN to verify"
+                },
+                "request_example": {
+                    "email": "user@example.com",
+                    "pin": "1234"
+                },
+                "response_success": {
+                    "success": True,
+                    "message": "PIN verified successfully"
+                },
+                "response_error": {
+                    "success": False,
+                    "error": "Error message (PIN not set, invalid PIN, user not found, etc.)"
+                },
+                "status_codes": {
+                    "200": "PIN verified successfully",
+                    "400": "Bad request (PIN not set for user, invalid email format, etc.)",
+                    "401": "Invalid PIN",
+                    "404": "User not found",
+                    "500": "Internal server error"
+                },
+                "notes": [
+                    "User must have previously registered a PIN using /api/pin/register",
+                    "If user has no PIN stored, a descriptive error is returned",
+                    "On successful verification, the last PIN verification timestamp is updated in the database"
                 ]
             },
             "POST /api/passkey/register/begin": {
