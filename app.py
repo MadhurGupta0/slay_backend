@@ -946,13 +946,40 @@ def get_user_by_email(email: str) -> Optional[dict]:
     """Get user by email"""
     try:
         user_response = supabase.table("slay_users").select("*").eq("email", email).execute()
-        
+
         if not user_response.data or len(user_response.data) == 0:
             return None
-        
+
         return user_response.data[0]
     except Exception as e:
         logger.error(f"Error getting user: {str(e)}")
+        return None
+
+def find_user_by_credential_id(credential_id: str) -> Optional[dict]:
+    """
+    Find user by passkey credential_id (for discoverable credentials).
+    Searches all users' passkey_credentials for a matching credential_id.
+    """
+    try:
+        # Get all users with passkey_credentials
+        users_response = supabase.table("slay_users").select("*").not_.is_("passkey_credentials", "null").execute()
+
+        if not users_response.data:
+            return None
+
+        for user in users_response.data:
+            credentials = user.get("passkey_credentials", [])
+            if not isinstance(credentials, list):
+                continue
+
+            for cred in credentials:
+                if isinstance(cred, dict) and cred.get("credential_id") == credential_id:
+                    logger.info(f"Found user by credential_id: {user.get('email')}")
+                    return user
+
+        return None
+    except Exception as e:
+        logger.error(f"Error finding user by credential_id: {str(e)}")
         return None
 
 def update_sign_count(email: str, credential_id: str, new_sign_count: int):
@@ -2582,29 +2609,39 @@ def passkey_login_complete():
         if not credential:
             return jsonify({"success": False, "error": "Credential is required"}), 400
 
-        # For discoverable credentials: extract email from userHandle
+        # Extract credential_id for lookup
+        credential_id_b64 = credential.get('id', '')
+
+        # For discoverable credentials: find user by credential_id or userHandle
         if not email:
-            user_handle = credential.get('response', {}).get('userHandle')
-            if user_handle:
-                try:
-                    # userHandle is the email encoded as base64url (set during registration)
-                    # Add padding if needed
-                    padded = user_handle + '=' * (4 - len(user_handle) % 4) if len(user_handle) % 4 else user_handle
-                    email = base64.urlsafe_b64decode(padded).decode('utf-8')
-                    is_discoverable = True
-                    logger.info(f"Discoverable credential: extracted email from userHandle: {email}")
-                except Exception as e:
-                    logger.error(f"Failed to decode userHandle: {e}")
-                    return jsonify({"success": False, "error": "Invalid userHandle in credential"}), 400
-            else:
-                return jsonify({"success": False, "error": "Email or userHandle required"}), 400
+            is_discoverable = True
+
+            # Primary method: lookup user by credential_id
+            if credential_id_b64:
+                found_user = find_user_by_credential_id(credential_id_b64)
+                if found_user:
+                    email = found_user.get('email')
+                    logger.info(f"Discoverable credential: found user by credential_id: {email}")
+
+            # Fallback: try to decode userHandle (if library returns proper base64url)
+            if not email:
+                user_handle = credential.get('response', {}).get('userHandle')
+                if user_handle:
+                    try:
+                        # userHandle is the email encoded as base64url (set during registration)
+                        padded = user_handle + '=' * (4 - len(user_handle) % 4) if len(user_handle) % 4 else user_handle
+                        decoded_email = base64.urlsafe_b64decode(padded).decode('utf-8')
+                        if validate_email(decoded_email):
+                            email = decoded_email
+                            logger.info(f"Discoverable credential: extracted email from userHandle: {email}")
+                    except Exception as e:
+                        logger.warning(f"Could not decode userHandle (using credential_id lookup instead): {e}")
+
+            if not email:
+                return jsonify({"success": False, "error": "Could not identify user from credential"}), 400
 
         if not validate_email(email):
             return jsonify({"success": False, "error": "Invalid email format"}), 400
-
-        # Extract credential ID from the credential
-        credential_id_raw = credential.get('id', '')
-        credential_id_b64 = credential_id_raw
 
         # Get user by email
         user = get_user_by_email(email)
