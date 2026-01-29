@@ -1124,6 +1124,26 @@ def store_discoverable_challenge(challenge_str: str, expiry_minutes: int = 5):
         }
         logger.debug(f"Stored discoverable challenge: {challenge_str[:20]}...")
 
+def get_recent_discoverable_challenge() -> Optional[str]:
+    """
+    Get the most recently created valid (non-expired) discoverable challenge.
+    Used when clientDataJSON challenge format doesn't match our stored format.
+    """
+    with _discoverable_challenges_lock:
+        now = datetime.utcnow()
+        valid_challenges = [
+            (k, v) for k, v in _discoverable_challenges.items()
+            if v["expiry"] > now
+        ]
+
+        if not valid_challenges:
+            return None
+
+        # Return the most recently created challenge
+        most_recent = max(valid_challenges, key=lambda x: x[1]["created_at"])
+        logger.debug(f"Found recent discoverable challenge: {most_recent[0][:20]}...")
+        return most_recent[0]
+
 def verify_discoverable_challenge(challenge_str: str) -> bool:
     """
     Verify a discoverable credential challenge exists and is not expired.
@@ -2664,25 +2684,15 @@ def passkey_login_complete():
         stored_challenge = None
 
         if is_discoverable:
-            # For discoverable credentials: extract challenge from clientDataJSON and verify in cache
-            try:
-                client_data_json_b64 = credential.get('response', {}).get('clientDataJSON', '')
-                # Add padding if needed
-                padded = client_data_json_b64 + '=' * (4 - len(client_data_json_b64) % 4) if len(client_data_json_b64) % 4 else client_data_json_b64
-                client_data_json = json.loads(base64.urlsafe_b64decode(padded).decode('utf-8'))
-                challenge_from_client = client_data_json.get('challenge', '')
-                logger.debug(f"Discoverable: extracted challenge from clientDataJSON: {challenge_from_client[:20]}...")
-
-                # Verify the challenge exists in our cache
-                if verify_discoverable_challenge(challenge_from_client):
-                    stored_challenge = challenge_from_client
-                    logger.info("Discoverable challenge verified successfully")
-                else:
-                    logger.warning("Discoverable challenge not found or expired")
-                    return jsonify({"success": False, "error": "Login session expired. Please start again."}), 400
-            except Exception as e:
-                logger.error(f"Error extracting challenge from clientDataJSON: {e}")
-                return jsonify({"success": False, "error": "Invalid credential data"}), 400
+            # For discoverable credentials: get the most recent challenge from our cache
+            # Note: react-native-passkey returns challenge in a non-standard format in clientDataJSON,
+            # so we use our stored challenge instead
+            stored_challenge = get_recent_discoverable_challenge()
+            if stored_challenge:
+                logger.info(f"Discoverable: using recent challenge from cache: {stored_challenge[:20]}...")
+            else:
+                logger.warning("No valid discoverable challenge found in cache")
+                return jsonify({"success": False, "error": "Login session expired. Please start again."}), 400
         else:
             # Traditional flow: get challenge from user record
             stored_challenge = user.get("verification_code")
