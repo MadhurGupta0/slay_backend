@@ -74,7 +74,7 @@ ORIGIN = os.getenv("ORIGIN", "https://slay.money")  # Origin for WebAuthn (mobil
 # EXPECTED_ORIGINS: List of allowed origins for WebAuthn verification
 EXPECTED_ORIGINS = [
     "https://slay.money",
-    #anroid:apk-key-hash:-sYXRdwJA3hvue3mKpYrOZ9zSPC7b4mbgzJmdZEDO5w",
+    "android:apk-key-hash:-sYXRdwJA3hvue3mKpYrOZ9zSPC7b4mbgzJmdZEDO5w",
     "android:apk-key-hash:RkrxZRKpmaeEXOIIiBkkHcvj7hxjOuGFQMQ_DOIYOI0",
 ]
 
