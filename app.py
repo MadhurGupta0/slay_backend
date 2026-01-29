@@ -2738,8 +2738,18 @@ def passkey_login_complete():
             cleaned_credential = remove_ellipsis(credential)
             # Extract and validate origin from credential
             validated_origin = get_validated_origin(credential)
+
+            # Parse credential (Pydantic v2 compatibility)
+            credential_json = json.dumps(cleaned_credential)
+            try:
+                # Pydantic v2
+                parsed_credential = AuthenticationCredential.model_validate_json(credential_json)
+            except AttributeError:
+                # Pydantic v1 fallback
+                parsed_credential = AuthenticationCredential.parse_raw(credential_json)
+
             verification = verify_authentication_response(
-                credential=AuthenticationCredential.parse_raw(json.dumps(cleaned_credential)),
+                credential=parsed_credential,
                 expected_challenge=challenge_bytes,
                 expected_origin=validated_origin,
                 expected_rp_id=RP_ID,
