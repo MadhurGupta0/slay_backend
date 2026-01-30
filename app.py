@@ -2486,7 +2486,11 @@ def passkey_login_begin():
         # Store challenge globally (NOT per email)
         store_global_webauthn_challenge(challenge_str, expiry_minutes=5)
 
-        options_dict = json.loads(authentication_options.model_dump_json())
+        # Pydantic v2/v1 compatibility
+        try:
+            options_dict = json.loads(authentication_options.model_dump_json())
+        except AttributeError:
+            options_dict = json.loads(authentication_options.json())
         options_dict = remove_ellipsis(options_dict)
 
         return jsonify({
