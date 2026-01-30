@@ -2382,6 +2382,35 @@ def passkey_register_complete():
 
 @app.route('/api/passkey/login/begin', methods=['POST'])
 def passkey_login_begin():
+    try:
+        # Generate challenge
+        challenge_str = generate_challenge()
+        challenge_bytes = base64.urlsafe_b64decode(challenge_str + '==')
+
+        authentication_options = generate_authentication_options(
+            rp_id=RP_ID,
+            challenge=challenge_bytes,
+            user_verification=UserVerificationRequirement.REQUIRED,
+            # 🚨 DO NOT SET allowCredentials
+        )
+
+        # Store challenge globally (NOT per email)
+        store_global_webauthn_challenge(challenge_str, expiry_minutes=5)
+
+        options_dict = json.loads(authentication_options.model_dump_json())
+        options_dict = remove_ellipsis(options_dict)
+
+        return jsonify({
+            "success": True,
+            "options": options_dict
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Failed to begin passkey login: {str(e)}"
+        }), 500
+
     """
     Begin passkey authentication process
     
@@ -2502,6 +2531,68 @@ def passkey_login_begin():
 
 @app.route('/api/passkey/login/complete', methods=['POST'])
 def passkey_login_complete():
+    try:
+        data = request.get_json()
+        credential = data.get('credential')
+
+        if not credential:
+            return jsonify({"success": False, "error": "Credential is required"}), 400
+
+        credential_id = credential.get('id')
+        if not credential_id:
+            return jsonify({"success": False, "error": "Invalid credential"}), 400
+
+        # 🔑 Lookup credential FIRST (not email)
+        stored_cred = get_credential_by_id(credential_id)
+        if not stored_cred:
+            return jsonify({"success": False, "error": "Credential not found"}), 404
+
+        user = get_user_by_id(stored_cred["user_id"])
+        if not user:
+            return jsonify({"success": False, "error": "User not found"}), 404
+
+        stored_challenge = get_global_webauthn_challenge()
+        if not stored_challenge:
+            return jsonify({"success": False, "error": "Session expired"}), 400
+
+        challenge_bytes = base64.urlsafe_b64decode(stored_challenge + '==')
+
+        public_key_bytes = base64.b64decode(stored_cred["public_key"])
+        sign_count = stored_cred.get("sign_count", 0)
+
+        cleaned_credential = remove_ellipsis(credential)
+        validated_origin = get_validated_origin(credential)
+
+        verification = verify_authentication_response(
+            credential=AuthenticationCredential.parse_raw(
+                json.dumps(cleaned_credential)
+            ),
+            expected_challenge=challenge_bytes,
+            expected_origin=validated_origin,
+            expected_rp_id=RP_ID,
+            credential_public_key=public_key_bytes,
+            credential_current_sign_count=sign_count,
+        )
+
+        update_sign_count(stored_cred["id"], verification.new_sign_count)
+        clear_global_webauthn_challenge()
+
+        return jsonify({
+            "success": True,
+            "message": "Passkey login successful",
+            "user": {
+                "id": user["id"],
+                "email": user["email"],
+                "username": user["username"]
+            }
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Passkey verification failed: {str(e)}"
+        }), 400
+
     """
     Complete passkey authentication
     
