@@ -36,7 +36,7 @@ from webauthn.helpers.structs import (
     RegistrationCredential,
     AuthenticationCredential,
 )
-from webauthn.helpers import parse_registration_credential_json
+from webauthn.helpers import parse_registration_credential_json, parse_authentication_credential_json
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -2665,12 +2665,9 @@ def passkey_login_complete():
         cleaned_credential = remove_ellipsis(credential)
         validated_origin = get_validated_origin(credential)
 
-        # Parse credential with Pydantic v2/v1 compatibility
+        # Parse credential using webauthn helper
         credential_json = json.dumps(cleaned_credential)
-        try:
-            parsed_credential = AuthenticationCredential.model_validate_json(credential_json)
-        except AttributeError:
-            parsed_credential = AuthenticationCredential.parse_raw(credential_json)
+        parsed_credential = parse_authentication_credential_json(credential_json)
 
         verification = verify_authentication_response(
             credential=parsed_credential,
