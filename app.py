@@ -78,11 +78,6 @@ EXPECTED_ORIGINS = [
     "android:apk-key-hash:RkrxZRKpmaeEXOIIiBkkHcvj7hxjOuGFQMQ_DOIYOI0",
 ]
 
-# Discoverable credentials challenge cache (for passkey login without email)
-# Key: challenge_str, Value: {"created_at": datetime, "expiry": datetime}
-_discoverable_challenges = {}
-_discoverable_challenges_lock = threading.Lock()
-
 # Helper Functions
 def generate_verification_code(length: int = 6) -> str:
     """Generate a random numeric verification code"""
@@ -946,40 +941,13 @@ def get_user_by_email(email: str) -> Optional[dict]:
     """Get user by email"""
     try:
         user_response = supabase.table("slay_users").select("*").eq("email", email).execute()
-
+        
         if not user_response.data or len(user_response.data) == 0:
             return None
-
+        
         return user_response.data[0]
     except Exception as e:
         logger.error(f"Error getting user: {str(e)}")
-        return None
-
-def find_user_by_credential_id(credential_id: str) -> Optional[dict]:
-    """
-    Find user by passkey credential_id (for discoverable credentials).
-    Searches all users' passkey_credentials for a matching credential_id.
-    """
-    try:
-        # Get all users with passkey_credentials
-        users_response = supabase.table("slay_users").select("*").not_.is_("passkey_credentials", "null").execute()
-
-        if not users_response.data:
-            return None
-
-        for user in users_response.data:
-            credentials = user.get("passkey_credentials", [])
-            if not isinstance(credentials, list):
-                continue
-
-            for cred in credentials:
-                if isinstance(cred, dict) and cred.get("credential_id") == credential_id:
-                    logger.info(f"Found user by credential_id: {user.get('email')}")
-                    return user
-
-        return None
-    except Exception as e:
-        logger.error(f"Error finding user by credential_id: {str(e)}")
         return None
 
 def update_sign_count(email: str, credential_id: str, new_sign_count: int):
@@ -1104,69 +1072,6 @@ def clear_webauthn_challenge(email: str):
         supabase.table("slay_users").update(update_data).eq("email", email).execute()
     except Exception as e:
         logger.error(f"Error clearing WebAuthn challenge: {str(e)}")
-
-def store_discoverable_challenge(challenge_str: str, expiry_minutes: int = 5):
-    """
-    Store a challenge for discoverable credentials (passkey login without email).
-    Uses in-memory cache with expiry.
-    """
-    with _discoverable_challenges_lock:
-        # Clean up expired challenges first
-        now = datetime.utcnow()
-        expired_keys = [k for k, v in _discoverable_challenges.items() if v["expiry"] < now]
-        for k in expired_keys:
-            del _discoverable_challenges[k]
-
-        # Store new challenge
-        _discoverable_challenges[challenge_str] = {
-            "created_at": now,
-            "expiry": now + timedelta(minutes=expiry_minutes)
-        }
-        logger.debug(f"Stored discoverable challenge: {challenge_str[:20]}...")
-
-def get_recent_discoverable_challenge() -> Optional[str]:
-    """
-    Get the most recently created valid (non-expired) discoverable challenge.
-    Used when clientDataJSON challenge format doesn't match our stored format.
-    """
-    with _discoverable_challenges_lock:
-        now = datetime.utcnow()
-        valid_challenges = [
-            (k, v) for k, v in _discoverable_challenges.items()
-            if v["expiry"] > now
-        ]
-
-        if not valid_challenges:
-            return None
-
-        # Return the most recently created challenge
-        most_recent = max(valid_challenges, key=lambda x: x[1]["created_at"])
-        logger.debug(f"Found recent discoverable challenge: {most_recent[0][:20]}...")
-        return most_recent[0]
-
-def verify_discoverable_challenge(challenge_str: str) -> bool:
-    """
-    Verify a discoverable credential challenge exists and is not expired.
-    Returns True if valid, False otherwise.
-    """
-    with _discoverable_challenges_lock:
-        if challenge_str not in _discoverable_challenges:
-            return False
-
-        challenge_data = _discoverable_challenges[challenge_str]
-        if datetime.utcnow() > challenge_data["expiry"]:
-            # Expired, remove it
-            del _discoverable_challenges[challenge_str]
-            return False
-
-        return True
-
-def clear_discoverable_challenge(challenge_str: str):
-    """Remove a discoverable credential challenge from cache."""
-    with _discoverable_challenges_lock:
-        if challenge_str in _discoverable_challenges:
-            del _discoverable_challenges[challenge_str]
-            logger.debug(f"Cleared discoverable challenge: {challenge_str[:20]}...")
 
 # Error Handlers
 @app.errorhandler(400)
@@ -2479,58 +2384,56 @@ def passkey_register_complete():
 def passkey_login_begin():
     """
     Begin passkey authentication process
-
+    
     Request Body:
     {
-        "email": "user@example.com" (optional - for discoverable credentials)
+        "email": "user@example.com" (required)
     }
-
-    For discoverable credentials (passkey selector), omit email.
-    The OS will show all available passkeys for this app.
     """
     try:
-        data = request.get_json() or {}
-
-        email = data.get('email', '').strip()
-
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"success": False, "error": "No data provided"}), 400
+        
+        email = data.get('email')
+        
+        if not email:
+            return jsonify({"success": False, "error": "Email is required"}), 400
+        
+        if not validate_email(email):
+            return jsonify({"success": False, "error": "Invalid email format"}), 400
+        
         # Generate challenge (as base64 string for storage, convert to bytes for WebAuthn)
         challenge_str = generate_challenge()
         challenge_bytes = base64.urlsafe_b64decode(challenge_str + '==')
-
+        
         allowed_credentials = []
-        user = None
-
-        # If email provided, get user's specific credentials (traditional flow)
-        # If not, this is discoverable credentials flow (no allowCredentials)
-        if email:
-            if not validate_email(email):
-                return jsonify({"success": False, "error": "Invalid email format"}), 400
-
-            user = get_user_by_email(email)
-            if not user:
-                return jsonify({"success": False, "error": "User not found"}), 404
-
-            if not user.get("email_verified"):
-                return jsonify({"success": False, "error": "Email not verified"}), 400
-
-            # Get user's passkey credentials
-            credentials = get_passkey_credentials(email)
-
-            for cred in credentials:
-                try:
-                    credential_id_bytes = base64.urlsafe_b64decode(cred["credential_id"] + '==')
-                    allowed_credentials.append(
-                        PublicKeyCredentialDescriptor(
-                            id=credential_id_bytes,
-                            type="public-key"
-                        )
+        
+        user = get_user_by_email(email)
+        if not user:
+            return jsonify({"success": False, "error": "User not found"}), 404
+        
+        if not user.get("email_verified"):
+            return jsonify({"success": False, "error": "Email not verified"}), 400
+        
+        # Get user's passkey credentials
+        credentials = get_passkey_credentials(email)
+        
+        for cred in credentials:
+            try:
+                credential_id_bytes = base64.urlsafe_b64decode(cred["credential_id"] + '==')
+                allowed_credentials.append(
+                    PublicKeyCredentialDescriptor(
+                        id=credential_id_bytes,
+                        type="public-key"
                     )
-                except Exception as e:
-                    logger.error(f"Error processing credential: {str(e)}")
-                    continue
-
+                )
+            except Exception as e:
+                logger.error(f"Error processing credential: {str(e)}")
+                continue
+        
         # Generate authentication options
-        # For discoverable credentials: allow_credentials=None lets OS show all passkeys
         authentication_options = generate_authentication_options(
             rp_id=RP_ID,
             challenge=challenge_bytes,
@@ -2538,13 +2441,8 @@ def passkey_login_begin():
             user_verification=UserVerificationRequirement.PREFERRED,
         )
         logger.debug(f"Generated challenge_bytes: {challenge_bytes}")
-        # Store challenge temporarily
-        if email:
-            # Traditional flow: store with user
-            store_webauthn_challenge(email, challenge_str, expiry_minutes=5)
-        else:
-            # Discoverable credentials: store in memory cache
-            store_discoverable_challenge(challenge_str, expiry_minutes=5)
+        # Store challenge temporarily (handles both TEXT and VARCHAR(10) columns)
+        store_webauthn_challenge(email, challenge_str, expiry_minutes=5)
         
         # Convert to JSON-serializable format
         try:
@@ -2606,63 +2504,35 @@ def passkey_login_begin():
 def passkey_login_complete():
     """
     Complete passkey authentication
-
+    
     Request Body:
     {
-        "email": "user@example.com",  // Optional for discoverable credentials
-        "credential": {...}  // WebAuthn credential from authenticator
+        "email": "user@example.com",  // Required
+        "credential": {...}  // WebAuthn credential from browser
     }
-
-    For discoverable credentials, email can be omitted.
-    The user is identified from userHandle in the credential response.
     """
     try:
         data = request.get_json()
-
+        
         if not data:
             return jsonify({"success": False, "error": "No data provided"}), 400
-
-        email = data.get('email', '').strip()
+        
+        email = data.get('email')
         credential = data.get('credential')
-        is_discoverable = False  # Track if this is a discoverable credential flow
-
+        
+        if not email:
+            return jsonify({"success": False, "error": "Email is required"}), 400
+        
         if not credential:
             return jsonify({"success": False, "error": "Credential is required"}), 400
-
-        # Extract credential_id for lookup
-        credential_id_b64 = credential.get('id', '')
-
-        # For discoverable credentials: find user by credential_id or userHandle
-        if not email:
-            is_discoverable = True
-
-            # Primary method: lookup user by credential_id
-            if credential_id_b64:
-                found_user = find_user_by_credential_id(credential_id_b64)
-                if found_user:
-                    email = found_user.get('email')
-                    logger.info(f"Discoverable credential: found user by credential_id: {email}")
-
-            # Fallback: try to decode userHandle (if library returns proper base64url)
-            if not email:
-                user_handle = credential.get('response', {}).get('userHandle')
-                if user_handle:
-                    try:
-                        # userHandle is the email encoded as base64url (set during registration)
-                        padded = user_handle + '=' * (4 - len(user_handle) % 4) if len(user_handle) % 4 else user_handle
-                        decoded_email = base64.urlsafe_b64decode(padded).decode('utf-8')
-                        if validate_email(decoded_email):
-                            email = decoded_email
-                            logger.info(f"Discoverable credential: extracted email from userHandle: {email}")
-                    except Exception as e:
-                        logger.warning(f"Could not decode userHandle (using credential_id lookup instead): {e}")
-
-            if not email:
-                return jsonify({"success": False, "error": "Could not identify user from credential"}), 400
-
+        
         if not validate_email(email):
             return jsonify({"success": False, "error": "Invalid email format"}), 400
-
+        
+        # Extract credential ID from the credential
+        credential_id_raw = credential.get('id', '')
+        credential_id_b64 = credential_id_raw
+        
         # Get user by email
         user = get_user_by_email(email)
         if not user:
@@ -2679,37 +2549,23 @@ def passkey_login_complete():
         
         if not matching_cred:
             return jsonify({"success": False, "error": "Credential not found for this user"}), 404
-
+        
         # Get stored challenge
-        stored_challenge = None
-
-        if is_discoverable:
-            # For discoverable credentials: get the most recent challenge from our cache
-            # Note: react-native-passkey returns challenge in a non-standard format in clientDataJSON,
-            # so we use our stored challenge instead
-            stored_challenge = get_recent_discoverable_challenge()
-            if stored_challenge:
-                logger.info(f"Discoverable: using recent challenge from cache: {stored_challenge[:20]}...")
-            else:
-                logger.warning("No valid discoverable challenge found in cache")
-                return jsonify({"success": False, "error": "Login session expired. Please start again."}), 400
-        else:
-            # Traditional flow: get challenge from user record
-            stored_challenge = user.get("verification_code")
-            logger.debug(f"Retrieved stored_challenge = {stored_challenge}")
-            if not stored_challenge:
-                logger.debug("stored_challenge is None or empty, returning early")
-                return jsonify({"success": False, "error": "Login session expired. Please start again."}), 400
-
-            # Check challenge expiry
-            expiry_str = user.get("verification_code_expiry")
-            if expiry_str:
-                try:
-                    expiry_time = parse_datetime_string(expiry_str)
-                    if datetime.utcnow() > expiry_time:
-                        return jsonify({"success": False, "error": "Login session expired. Please start again."}), 400
-                except ValueError:
-                    pass
+        stored_challenge = user.get("verification_code")
+        logger.debug(f"Retrieved stored_challenge = {stored_challenge}")
+        if not stored_challenge:
+            logger.debug("stored_challenge is None or empty, returning early")
+            return jsonify({"success": False, "error": "Login session expired. Please start again."}), 400
+        
+        # Check challenge expiry
+        expiry_str = user.get("verification_code_expiry")
+        if expiry_str:
+            try:
+                expiry_time = parse_datetime_string(expiry_str)
+                if datetime.utcnow() > expiry_time:
+                    return jsonify({"success": False, "error": "Login session expired. Please start again."}), 400
+            except ValueError:
+                pass
         
         # Get public key from stored credential
         logger.debug(f"About to decode public key. stored_challenge = {stored_challenge}")
@@ -2738,18 +2594,8 @@ def passkey_login_complete():
             cleaned_credential = remove_ellipsis(credential)
             # Extract and validate origin from credential
             validated_origin = get_validated_origin(credential)
-
-            # Parse credential (Pydantic v2 compatibility)
-            credential_json = json.dumps(cleaned_credential)
-            try:
-                # Pydantic v2
-                parsed_credential = AuthenticationCredential.model_validate_json(credential_json)
-            except AttributeError:
-                # Pydantic v1 fallback
-                parsed_credential = AuthenticationCredential.parse_raw(credential_json)
-
             verification = verify_authentication_response(
-                credential=parsed_credential,
+                credential=AuthenticationCredential.parse_raw(json.dumps(cleaned_credential)),
                 expected_challenge=challenge_bytes,
                 expected_origin=validated_origin,
                 expected_rp_id=RP_ID,
@@ -2759,14 +2605,9 @@ def passkey_login_complete():
             
             # Update sign count
             update_sign_count(email, credential_id_b64, verification.new_sign_count)
-
-            # Clear challenge
-            if is_discoverable:
-                # Clear from discoverable cache
-                clear_discoverable_challenge(stored_challenge)
-            else:
-                # Clear from user record (handles both verification_code and JSONB storage)
-                clear_webauthn_challenge(email)
+            
+            # Clear challenge (handles both verification_code and JSONB storage)
+            clear_webauthn_challenge(email)
             
             # Return user info
             user_data = {
