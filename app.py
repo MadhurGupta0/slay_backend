@@ -1073,6 +1073,95 @@ def clear_webauthn_challenge(email: str):
     except Exception as e:
         logger.error(f"Error clearing WebAuthn challenge: {str(e)}")
 
+# Global WebAuthn Challenge Storage (for discoverable credentials flow)
+# In-memory storage with thread safety - works for single container deployment
+_global_challenge_lock = threading.Lock()
+_global_challenge_data = {"challenge": None, "expiry": None}
+
+def store_global_webauthn_challenge(challenge_str: str, expiry_minutes: int = 5):
+    """Store a global WebAuthn challenge for discoverable credentials flow (no email required)"""
+    global _global_challenge_data
+    with _global_challenge_lock:
+        _global_challenge_data = {
+            "challenge": challenge_str,
+            "expiry": (datetime.utcnow() + timedelta(minutes=expiry_minutes)).isoformat()
+        }
+    logger.debug(f"Stored global challenge: {challenge_str[:20]}...")
+
+def get_global_webauthn_challenge() -> Optional[str]:
+    """Retrieve the global WebAuthn challenge"""
+    global _global_challenge_data
+    with _global_challenge_lock:
+        if not _global_challenge_data.get("challenge"):
+            return None
+
+        expiry_str = _global_challenge_data.get("expiry")
+        if expiry_str:
+            try:
+                expiry = parse_datetime_string(expiry_str)
+                if datetime.utcnow() > expiry:
+                    logger.debug("Global challenge expired")
+                    return None
+            except:
+                pass
+
+        return _global_challenge_data.get("challenge")
+
+def clear_global_webauthn_challenge():
+    """Clear the global WebAuthn challenge"""
+    global _global_challenge_data
+    with _global_challenge_lock:
+        _global_challenge_data = {"challenge": None, "expiry": None}
+    logger.debug("Cleared global challenge")
+
+def get_credential_by_id(credential_id: str) -> Optional[dict]:
+    """
+    Find a passkey credential by its ID across all users.
+    Returns dict with credential data and user_id if found.
+    """
+    try:
+        # Query all users that have passkey_credentials
+        response = supabase.table("slay_users").select("id, email, passkey_credentials").not_.is_("passkey_credentials", "null").execute()
+
+        if not response.data:
+            return None
+
+        for user in response.data:
+            credentials = user.get("passkey_credentials", [])
+            if not isinstance(credentials, list):
+                continue
+
+            for cred in credentials:
+                if isinstance(cred, dict) and cred.get("credential_id") == credential_id:
+                    # Return credential with user info
+                    return {
+                        "credential_id": cred.get("credential_id"),
+                        "public_key": cred.get("public_key"),
+                        "sign_count": cred.get("sign_count", 0),
+                        "device_name": cred.get("device_name"),
+                        "user_id": user.get("id"),
+                        "user_email": user.get("email"),
+                        "id": cred.get("credential_id")  # Alias for compatibility
+                    }
+
+        return None
+    except Exception as e:
+        logger.error(f"Error finding credential by ID: {str(e)}")
+        return None
+
+def get_user_by_id(user_id: str) -> Optional[dict]:
+    """Get user by their ID"""
+    try:
+        response = supabase.table("slay_users").select("*").eq("id", user_id).execute()
+
+        if not response.data or len(response.data) == 0:
+            return None
+
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error getting user by ID: {str(e)}")
+        return None
+
 # Error Handlers
 @app.errorhandler(400)
 def bad_request(error):
@@ -2563,10 +2652,15 @@ def passkey_login_complete():
         cleaned_credential = remove_ellipsis(credential)
         validated_origin = get_validated_origin(credential)
 
+        # Parse credential with Pydantic v2/v1 compatibility
+        credential_json = json.dumps(cleaned_credential)
+        try:
+            parsed_credential = AuthenticationCredential.model_validate_json(credential_json)
+        except AttributeError:
+            parsed_credential = AuthenticationCredential.parse_raw(credential_json)
+
         verification = verify_authentication_response(
-            credential=AuthenticationCredential.parse_raw(
-                json.dumps(cleaned_credential)
-            ),
+            credential=parsed_credential,
             expected_challenge=challenge_bytes,
             expected_origin=validated_origin,
             expected_rp_id=RP_ID,
@@ -2574,7 +2668,7 @@ def passkey_login_complete():
             credential_current_sign_count=sign_count,
         )
 
-        update_sign_count(stored_cred["id"], verification.new_sign_count)
+        update_sign_count(stored_cred["user_email"], stored_cred["credential_id"], verification.new_sign_count)
         clear_global_webauthn_challenge()
 
         return jsonify({
